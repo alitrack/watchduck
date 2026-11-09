@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  geometry-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Frozen geometry still passes acceptance
+        run: python3 scripts/geometry.py
+
+  static-page-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: index.html exists and references CDN engine
+        run: |
+          test -f index.html
+          grep -q "duckdb-wasm" index.html
+          grep -q "ST_Intersects" index.html
