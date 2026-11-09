@@ -2,7 +2,7 @@
 
 **A mechanical watch escapement that runs inside DuckDB-WASM, in your browser. No server, no physics engine — every tick is a SQL query.**
 
-[中文版 README](README_cn.md)
+[Chinese version: README_cn.md](README_cn.md)
 
 Inspired by [“The Watchmaker: Building a Mechanical Watch in a Database”](https://sqlartist.github.io/posts/the-watchmaker-building-a-mechanical-watch-in-a-database/) (which used SQL Server Spatial, then PostGIS) and Bartosz Ciechanowski's [Mechanical Watch](https://ciechanow.ski/mechanical-watch/).
 
