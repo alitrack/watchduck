@@ -29,7 +29,7 @@ Press **“Show collision map”** to see the actual table: red = metal on metal
 
 ## Try it
 
-Open the GitHub Pages site (link in the repo sidebar) — the whole engine is a static HTML page:
+[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the whole engine is a static HTML page:
 
 - ~40 MB DuckDB-WASM + spatial extension downloads on first load (cached after), works offline afterwards
 - **Start / Pause / Reset**, and the live counter of the emergent **deg/beat** (theory: 12.00° = half the 24° tooth pitch)

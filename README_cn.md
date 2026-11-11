@@ -6,6 +6,11 @@
 
 灵感来自[《The Watchmaker: 用数据库造一块机械表》](https://sqlartist.github.io/posts/the-watchmaker-building-a-mechanical-watch-in-a-database/)（原作者先用 SQL Server Spatial，后迁 PostGIS）以及 Bartosz Ciechanowski 的 [Mechanical Watch](https://ciechanow.ski/mechanical-watch/)。
 
+## 在线体验
+
+[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)——整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
+
+
 ## 你会看到什么
 
 一个 15 齿的擒纵轮、带两颗宝石的擒纵叉、一个摆轮。擒纵叉以 5 拍/秒（18000 bph，经典机芯频率）摆动 ±10°。擒纵轮每拍前进半个齿距——**约 12°/拍，而代码里从没写过 12 这个数字**。它和真表一样，是从形状里「涌现」出来的。
