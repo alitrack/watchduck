@@ -25,11 +25,11 @@ SELECT ST_Intersects(
 2. **Run the watch (per frame, in SQL).** Each animation frame positions the fork with a triangle wave (like a real balance dwelling at the turn points) and asks the database one prepared query: *is this state blocked?* If free, the wheel advances; if blocked, the metal stops it. Lock → release → lock → release: the tick.
 3. **Draw (canvas).** The browser only draws what DuckDB decided. It never decides anything.
 
-Press **“Show collision map”** to see the actual table: red = metal on metal, green = the wheel may pass. The horizontal free corridor shifting with fork angle **is** the escapement.
+The 3D view is pure presentation — the same DuckDB collision map and one-query-per-substep solver drive it, so the 3D and 2D views never disagree. Press **“Show collision map”** to see the actual table: red = metal on metal, green = the wheel may pass. The horizontal free corridor shifting with fork angle **is** the escapement.
 
 ## Try it
 
-[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the whole engine is a static HTML page:
+[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the 3D view (Three.js: solid metal escape wheel, ruby stones, balance + hairspring; drag to orbit). The 2D engineering view is at [index2d.html](https://alitrack.github.io/watchduck/index2d.html). The whole engine is a static HTML page:
 
 - ~40 MB DuckDB-WASM + spatial extension downloads on first load (cached after), works offline afterwards
 - **Start / Pause / Reset**, and the live counter of the emergent **deg/beat** (theory: 12.00° = half the 24° tooth pitch)

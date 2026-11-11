@@ -8,7 +8,7 @@
 
 ## 在线体验
 
-[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)——整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
+[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（3D 视图，Three.js：立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，可拖拽旋转）；2D 工程视图在 [index2d.html](https://alitrack.github.io/watchduck/index2d.html)。整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
 
 
 ## 你会看到什么
