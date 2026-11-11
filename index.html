@@ -227,7 +227,12 @@ function shadowed(m) { m.castShadow = true; m.receiveShadow = true; return m; }
   plate.position.set(0, 9.2, -1.35);
   scene.add(plate);
   for (let i = 0; i < 8; i++) {
-    const s = shadowed(new THREE.Mesh(new THREE.BoxGeometry(44, 2.15, 0.08), i % 2 ? STR_A : STR_B));
+    // each stripe row clipped to the plate circle: half-width = chord at the
+    // row's outermost edge (real Geneva stripes taper toward the circular rim)
+    const dy = (i - 3.5) * 5.0;
+    const dyEdge = dy + (dy >= 0 ? 1.075 : -1.075);
+    const halfW = Math.sqrt(Math.max(0, 20.5 * 20.5 - dyEdge * dyEdge)) * 0.995;
+    const s = shadowed(new THREE.Mesh(new THREE.BoxGeometry(halfW * 2, 2.15, 0.08), i % 2 ? STR_A : STR_B));
     s.position.set(0, 9.2 + (i - 3.5) * 5.0, -1.05);
     scene.add(s);
   }
