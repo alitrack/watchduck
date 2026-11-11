@@ -13,10 +13,11 @@
   h1 .accent { color:var(--acc); }
   .sub { color:var(--dim); font-size:12.5px; line-height:1.55; max-width:880px; }
   main { display:flex; flex-wrap:wrap; gap:16px; padding:16px 24px 32px; }
-  .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; flex:0 0 auto; position:relative; }
-  #scene { display:block; background:#0b0d11; border-radius:6px; width:720px; height:720px; }
+  .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; flex:0 1 calc(100vh - 260px); min-width:320px; position:relative; }
+  #scene { display:block; background:#0b0d11; border-radius:6px; width:100%; aspect-ratio:1/1; }
+  #scene canvas { display:block; width:100%; height:100%; }
   #mapcv { display:none; position:absolute; left:10px; top:10px; background:#0b0d11; border-radius:6px; }
-  .side { flex:1 1 300px; min-width:300px; max-width:430px; display:flex; flex-direction:column; gap:12px; }
+  .side { flex:0 0 340px; min-width:300px; max-width:400px; display:flex; flex-direction:column; gap:12px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .card h2 { font-size:12px; margin:0 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; font-weight:600; }
   .row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:13px; }
@@ -48,7 +49,7 @@
   DuckDB-WASM asks <b>do these shapes overlap?</b> (~79k ST_Intersects calls) to build the collision map,
   then a recursive SQL solver walks the map tick by tick. No physics engine — just SQL. The 3D is pure
   presentation — <b>DuckDB still decides every tick</b> — nothing in the code says “12° per beat”; that number
-  falls out of the shapes. Drag to orbit, scroll to zoom.</div>
+  falls out of the shapes. Drag to orbit, scroll to zoom — flip it over to see the dial and hands on the other side.</div>
 </header>
 <main>
   <div class="canvas-wrap">
@@ -151,6 +152,15 @@ renderer.toneMappingExposure = 1.15;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 $('scene').appendChild(renderer.domElement);
+const sceneEl = $('scene');
+function fitRenderer() {                       // keep the canvas square to its layout box
+  const w = Math.max(320, Math.floor(sceneEl.clientWidth || 720));
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(w, w, false);
+  cam.aspect = 1; cam.updateProjectionMatrix();
+}
+new ResizeObserver(fitRenderer).observe(sceneEl);
+fitRenderer();
 
 const controls = new OrbitControls(cam, renderer.domElement);
 controls.target.set(0, 9.2, 0);
