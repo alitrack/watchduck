@@ -601,6 +601,10 @@ await c.query(`
   FROM grid g CROSS JOIN geoms e`);
 const mapInfo = (await c.query(`SELECT count(*)::DOUBLE n, sum(blocked)::DOUBLE b FROM esc_map`)).toArray()[0];
 const mapMs = Math.round(performance.now() - t0);
+// prepared point-lookup: parse once, execute every frame (no per-frame SQL string parsing)
+await c.query(`PREPARE p_lookup AS
+  SELECT blocked::DOUBLE AS blocked FROM esc_map
+  WHERE wheel_deg = $1 AND fork_deg = $2`);
 $('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number(mapInfo.b).toLocaleString()} blocked) / ${mapMs} ms`;
 setSQL(`-- map built once (${Number(mapInfo.n).toLocaleString()} ST_Intersects pairs):
 CREATE TABLE esc_map AS
@@ -648,8 +652,7 @@ async function physicsStep(vSec) {
   // ONE physical question to the database, at virtual time vSec.
   const ph = (vSec * BEAT_HZ) % 1.0;
   const fork = A * (4 * Math.abs(ph - 0.5) - 1);
-  const res = await c.query(`SELECT blocked::DOUBLE AS blocked FROM esc_map
-                             WHERE wheel_deg = ${fmt(wheel % PITCH)} AND fork_deg = ${fmt(fork)}`);
+  const res = await c.query(`EXECUTE p_lookup(${fmt(wheel % PITCH)}, ${fmt(fork)})`);
   frames++;
   const row0 = res.toArray()[0];
   const blocked = row0 ? Number(row0.blocked) !== 0 : true;   // absent state = blocked
@@ -662,6 +665,7 @@ async function physicsStep(vSec) {
   $('v-q').textContent = `${frames} SQL verdicts`;
   return { fork, blocked };
 }
+let _lastBeatWheel = 0, _dpbHist = [];
 function updateHud(tSec) {
   const newBeats = Math.floor(tSec * BEAT_HZ);
   if (newBeats > beats) {
@@ -669,8 +673,11 @@ function updateHud(tSec) {
     tickSound();
     $('v-beats').textContent = beats;
     $('v-adv').textContent = (wheel % 360).toFixed(1) + '°';
-    const dpb = beats > 2 ? wheel / beats : null;
-    $('v-dpb').textContent = dpb ? dpb.toFixed(2) + '°  (theory: 12.00°)' : '—';
+    // rolling deg/beat over the last 25 beats — damps the start-up transient
+    _dpbHist.push(wheel - _lastBeatWheel); _lastBeatWheel = wheel;
+    if (_dpbHist.length > 25) _dpbHist.shift();
+    const mean = _dpbHist.reduce((a, b) => a + b, 0) / _dpbHist.length;
+    $('v-dpb').textContent = beats > 2 ? mean.toFixed(2) + '°  (theory: 12.00°)' : '—';
     $('v-rate').textContent = `${(wheel / PITCH).toFixed(1)} teeth in ${beats} beats`;
   }
   // actual browser clock, refreshed every frame while running
@@ -714,6 +721,7 @@ $('b-run').onclick = () => {
 };
 $('b-reset').onclick = () => {
   wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;
+  _lastBeatWheel = 0; _dpbHist = [];
   $('v-beats').textContent = '0'; $('v-adv').textContent = '0.0°';
   $('v-dpb').textContent = '—'; $('v-rate').textContent = '—'; $('v-q').textContent = '—';
   $('v-wall').textContent = '—';
