@@ -425,6 +425,65 @@ balanceGroup.position.set(BAL_C[0], BAL_C[1], 0.8);
 }
 scene.add(balanceGroup);
 
+// ---- front dial + hands (the watch face, on the side OPPOSITE the movement) ----
+// A real watch keeps its hands on the dial, facing away from the movement, so
+// they live on the -Z side here. Build the face "toward the viewer" then flip the
+// group 180° about Y so it reads correctly from the front without mirroring.
+const dialGroup = new THREE.Group();
+dialGroup.position.set(0, 9.2, -2.2);
+dialGroup.rotation.y = Math.PI;
+{
+  const R_D = 20.0;
+  const dial = shadowed(new THREE.Mesh(
+    new THREE.CylinderGeometry(R_D, R_D, 0.18, 96),
+    new THREE.MeshStandardMaterial({ color: 0x0e1a2e, metalness: 0.62, roughness: 0.42 })));
+  dial.rotation.x = Math.PI / 2;
+  dialGroup.add(dial);
+  dialGroup.add(new THREE.Mesh(new THREE.TorusGeometry(R_D - 0.9, 0.09, 10, 160), GOLD_W));
+  for (let i = 0; i < 12; i++) {                     // gold bat markers, 12 o'clock double
+    const a = i * Math.PI / 6, d12 = i === 0, rr = R_D - 2.6;
+    const mk = shadowed(new THREE.Mesh(new THREE.BoxGeometry(d12 ? 1.5 : 0.85, d12 ? 2.6 : 2.4, 0.14), GOLD));
+    mk.position.set(rr * Math.sin(a), rr * Math.cos(a), 0.14);
+    mk.rotation.z = -a;
+    dialGroup.add(mk);
+  }
+  for (let i = 0; i < 60; i++) {                     // fine minute ticks
+    if (i % 5 === 0) continue;
+    const a = i * Math.PI / 30, rr = R_D - 1.5;
+    const t = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.7, 0.1), GOLD_W);
+    t.position.set(rr * Math.sin(a), rr * Math.cos(a), 0.13);
+    t.rotation.z = -a;
+    dialGroup.add(t);
+  }
+}
+scene.add(dialGroup);
+
+function handShape(len, wBase, wTip, tail) {          // points +Y (12 o'clock) in dial frame
+  const s = new THREE.Shape();
+  s.moveTo(-wBase / 2, -tail); s.lineTo(wBase / 2, -tail);
+  s.lineTo(wTip / 2, len); s.lineTo(0, len + 0.9); s.lineTo(-wTip / 2, len);
+  s.closePath();
+  return s;
+}
+const hands = {};
+{
+  const HZ = 0.34;
+  const mkHand = (len, wB, wT, tail, mat, z) => {
+    const g = new THREE.Group();
+    const h = shadowed(new THREE.Mesh(
+      new THREE.ExtrudeGeometry(handShape(len, wB, wT, tail), { depth: 0.06, bevelEnabled: false }), mat));
+    h.position.z = z; g.add(h); return g;
+  };
+  hands.hour   = mkHand(10.5, 1.5, 0.5, 1.4, BLUED, HZ);
+  hands.minute = mkHand(16.5, 1.1, 0.4, 1.8, BLUED, HZ + 0.09);
+  hands.second = mkHand(18.5, 0.4, 0.28, 3.2,
+    new THREE.MeshStandardMaterial({ color: 0xb8322a, metalness: 0.5, roughness: 0.3 }), HZ + 0.18);
+  const hub = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, 0.5, 28), GOLD));
+  hub.rotation.x = Math.PI / 2; hub.position.z = HZ + 0.2;
+  dialGroup.add(hub);
+  for (const h of Object.values(hands)) dialGroup.add(h);
+}
+
 // ---------- frame state → meshes (the ONLY place the render reads physics) ----------
 let flashLevel = 0;
 function render3D(fork, blocked) {
@@ -441,6 +500,11 @@ function render3D(fork, blocked) {
     t.material.emissiveIntensity = hot ? 0.8 : 0;
   }
   flash.intensity = flashLevel * 3.0;
+  // hands advance by virtual time (dial is on the -Z face); clockwise = -z in dial frame
+  const t = vClock;
+  hands.second.rotation.z = -rad((t % 60) / 60 * 360);
+  hands.minute.rotation.z = -rad((t / 60 % 60) / 60 * 360);
+  hands.hour.rotation.z   = -rad((t / 3600 % 12) / 12 * 360);
 }
 
 // optional heatmap of the collision map (queried from DuckDB, drawn on the overlay)
