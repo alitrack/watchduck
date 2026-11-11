@@ -14,7 +14,7 @@
   .sub { color:var(--dim); font-size:12.5px; line-height:1.55; max-width:880px; }
   main { display:flex; flex-wrap:wrap; gap:16px; padding:16px 24px 32px; }
   .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; flex:0 0 auto; position:relative; }
-  #scene { display:block; background:#0b0d11; border-radius:6px; width:640px; height:640px; }
+  #scene { display:block; background:#0b0d11; border-radius:6px; width:720px; height:720px; }
   #mapcv { display:none; position:absolute; left:10px; top:10px; background:#0b0d11; border-radius:6px; }
   .side { flex:1 1 300px; min-width:300px; max-width:430px; display:flex; flex-direction:column; gap:12px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
@@ -139,12 +139,12 @@ function stoneWKTaboutPivot(which) {
 const rad = d => d * Math.PI / 180;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x08090c);
-scene.fog = new THREE.Fog(0x08090c, 46, 90);
+scene.fog = new THREE.Fog(0x08090c, 80, 240);
 
-const cam = new THREE.PerspectiveCamera(34, 1, 0.1, 200);
-cam.position.set(7, 17, 25);
+const cam = new THREE.PerspectiveCamera(42, 1, 0.1, 300);
+cam.position.set(10, 15, 54);   // frames the full plate (41u diameter) with margin
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(640, 640);
+renderer.setSize(720, 720);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.15;
@@ -153,11 +153,11 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 $('scene').appendChild(renderer.domElement);
 
 const controls = new OrbitControls(cam, renderer.domElement);
-controls.target.set(0, 10.5, 0);
+controls.target.set(0, 9.2, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.minDistance = 11;
-controls.maxDistance = 55;
+controls.minDistance = 8;
+controls.maxDistance = 130;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 0.55;
 controls.addEventListener('start', () => { controls.autoRotate = false; });
