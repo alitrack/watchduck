@@ -483,6 +483,7 @@ const hands = {};
   dialGroup.add(hub);
   for (const h of Object.values(hands)) dialGroup.add(h);
 }
+window.__wdHands = hands;   // diagnostic: proves dial+hands module code executed
 
 // ---------- frame state → meshes (the ONLY place the render reads physics) ----------
 let flashLevel = 0;
