@@ -78,6 +78,7 @@
       <div class="row"><span>wheel advance</span><span class="v" id="v-adv">0.0°</span></div>
       <div class="row"><span>deg / beat (emergent)</span><span class="v" id="v-dpb">—</span></div>
       <div class="row"><span>rate</span><span class="v" id="v-rate">—</span></div>
+      <div class="row"><span>browser time</span><span class="v" id="v-wall">—</span></div>
       <div class="btns" style="margin-top:8px">
         <button id="b-run" disabled>Start</button>
         <button id="b-reset" disabled>Reset</button>
@@ -510,11 +511,12 @@ function render3D(fork, blocked) {
     t.material.emissiveIntensity = hot ? 0.8 : 0;
   }
   flash.intensity = flashLevel * 3.0;
-  // hands advance by virtual time (dial is on the -Z face); clockwise = -z in dial frame
+  // hands advance by virtual time (dial is on the -Z face).
+  // Front viewer stands at -Z: their right is -X, so CLOCKWISE = +z rotation.
   const t = vClock;
-  hands.second.rotation.z = -rad((t % 60) / 60 * 360);
-  hands.minute.rotation.z = -rad((t / 60 % 60) / 60 * 360);
-  hands.hour.rotation.z   = -rad((t / 3600 % 12) / 12 * 360);
+  hands.second.rotation.z = rad((t % 60) / 60 * 360);
+  hands.minute.rotation.z = rad((t / 60 % 60) / 60 * 360);
+  hands.hour.rotation.z   = rad((t / 3600 % 12) / 12 * 360);
 }
 
 // optional heatmap of the collision map (queried from DuckDB, drawn on the overlay)
@@ -663,6 +665,8 @@ function updateHud(tSec) {
     $('v-dpb').textContent = dpb ? dpb.toFixed(2) + '°  (theory: 12.00°)' : '—';
     $('v-rate').textContent = `${(wheel / PITCH).toFixed(1)} teeth in ${beats} beats`;
   }
+  // actual browser clock, refreshed every frame while running
+  $('v-wall').textContent = new Date().toLocaleTimeString();
 }
 
 // ---------- main loop: virtual-clock physics substeps (each one SQL query) ----------
@@ -703,6 +707,7 @@ $('b-reset').onclick = () => {
   wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;
   $('v-beats').textContent = '0'; $('v-adv').textContent = '0.0°';
   $('v-dpb').textContent = '—'; $('v-rate').textContent = '—'; $('v-q').textContent = '—';
+  $('v-wall').textContent = '—';
   render3D(0, false);
 };
 setStatus('ready — every frame is one SQL query');
