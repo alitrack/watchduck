@@ -11,7 +11,7 @@
   header { padding:18px 24px 10px; border-bottom:1px solid var(--line); }
   h1 { font-size:19px; margin:0 0 4px; letter-spacing:.5px; }
   h1 .accent { color:var(--acc); }
-  .sub { color:var(--dim); font-size:12.5px; line-height:1.55; max-width:860px; }
+  .sub { color:var(--dim); font-size:12.5px; line-height:1.55; max-width:880px; }
   main { display:flex; flex-wrap:wrap; gap:16px; padding:16px 24px 32px; }
   .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; flex:0 0 auto; position:relative; }
   #scene { display:block; background:#0b0d11; border-radius:6px; width:640px; height:640px; }
@@ -46,9 +46,9 @@
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser — 3D</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
   DuckDB-WASM asks <b>do these shapes overlap?</b> (~79k ST_Intersects calls) to build the collision map,
-  then a recursive SQL solver walks the map tick by tick. No physics engine — just SQL. The 3D rendering
-  is pure presentation: <b>DuckDB still decides every tick</b>. Nothing in the code says “12° per beat”; that number falls out of the shapes.
-  Drag to orbit, scroll to zoom.</div>
+  then a recursive SQL solver walks the map tick by tick. No physics engine — just SQL. The 3D is pure
+  presentation — <b>DuckDB still decides every tick</b> — nothing in the code says “12° per beat”; that number
+  falls out of the shapes. Drag to orbit, scroll to zoom.</div>
 </header>
 <main>
   <div class="canvas-wrap">
@@ -56,7 +56,7 @@
     <canvas id="mapcv" width="640" height="640"></canvas>
     <div class="legend">
       <span><span class="dot" style="background:#c9a557"></span>escape wheel (15 teeth)</span>
-      <span><span class="dot" style="background:#4fc3f7"></span>pallet fork</span>
+      <span><span class="dot" style="background:#9fb4c8"></span>pallet fork</span>
       <span><span class="dot" style="background:#e05252"></span>ruby stones</span>
       <span><span class="dot" style="background:#7ddf8a"></span>balance + hairspring</span>
     </div>
@@ -132,6 +132,341 @@ function stoneWKTaboutPivot(which) {
   return { wkt: 'POLYGON((' + pts.join(', ') + '))',
            off: [PIVOT[0], PIVOT[1]] };
 }
+
+// ============================================================
+//  THREE.js scene — the movement as real metal
+// ============================================================
+const rad = d => d * Math.PI / 180;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x08090c);
+scene.fog = new THREE.Fog(0x08090c, 46, 90);
+
+const cam = new THREE.PerspectiveCamera(34, 1, 0.1, 200);
+cam.position.set(7, 17, 25);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(640, 640);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+$('scene').appendChild(renderer.domElement);
+
+const controls = new OrbitControls(cam, renderer.domElement);
+controls.target.set(0, 10.5, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 11;
+controls.maxDistance = 55;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.addEventListener('start', () => { controls.autoRotate = false; });
+controls.update();
+
+// ---- studio environment (softboxes) → real metal reflections ----
+function makeEnvScene() {
+  const s = new THREE.Scene();
+  s.background = new THREE.Color(0x0a0c10);
+  const geo = new THREE.PlaneGeometry(1, 1);
+  const mk = (color, i, x, y, z, w, h) => {
+    const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(i) }));
+    m.scale.set(w, h, 1); m.position.set(x, y, z); m.lookAt(0, 0, 0);
+    s.add(m);
+  };
+  mk(0xffffff, 7, 0, 12, 2, 9, 7);        // top key softbox
+  mk(0xbfd4ff, 3, -12, 4, 8, 7, 10);      // cool left
+  mk(0xffd9a0, 3.5, 12, 2, -4, 7, 9);     // warm right
+  mk(0x30435c, 1.4, 0, -10, 0, 14, 8);    // dim floor bounce
+  mk(0xffffff, 1.8, 0, 6, -14, 10, 5);    // back rim
+  return s;
+}
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(makeEnvScene(), 0.05).texture;
+
+// ---- lights (env does the reflection work; these add form + shadows) ----
+scene.add(new THREE.AmbientLight(0x50607a, 0.55));
+const key = new THREE.DirectionalLight(0xfff0dd, 2.0);
+key.position.set(14, 28, 20);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -26; key.shadow.camera.right = 26;
+key.shadow.camera.top = 26; key.shadow.camera.bottom = -26;
+key.shadow.camera.near = 1; key.shadow.camera.far = 80;
+key.shadow.bias = -0.0004;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x7fa8ff, 0.8);
+rim.position.set(-16, 8, -18);
+scene.add(rim);
+const glint = new THREE.PointLight(0xc9a557, 0.7, 70);
+glint.position.set(0, 3, 15);
+scene.add(glint);
+const flash = new THREE.PointLight(0xff4433, 0, 26);
+flash.position.set(0, R + 2, 3);
+scene.add(flash);
+
+// ---- materials ----
+const GOLD    = new THREE.MeshStandardMaterial({ color: 0xc9a557, metalness: 0.95, roughness: 0.18 });
+const GOLD_W  = new THREE.MeshStandardMaterial({ color: 0xb08d45, metalness: 0.9,  roughness: 0.3 });
+const STEEL   = new THREE.MeshStandardMaterial({ color: 0x9fb4c8, metalness: 0.95, roughness: 0.22 });
+const BLUED   = new THREE.MeshStandardMaterial({ color: 0x33518f, metalness: 0.9,  roughness: 0.16 });
+const PLATE   = new THREE.MeshStandardMaterial({ color: 0x161b26, metalness: 0.85, roughness: 0.42 });
+const STR_A   = new THREE.MeshStandardMaterial({ color: 0x273042, metalness: 0.95, roughness: 0.22 });
+const STR_B   = new THREE.MeshStandardMaterial({ color: 0x1d2534, metalness: 0.95, roughness: 0.38 });
+const RUBY    = new THREE.MeshStandardMaterial({ color: 0xd23440, metalness: 0.15, roughness: 0.08,
+  emissive: 0x530b10, emissiveIntensity: 0.55 });
+const RUBY_HOT = new THREE.MeshStandardMaterial({ color: 0xff5544, metalness: 0.15, roughness: 0.08,
+  emissive: 0xff2211, emissiveIntensity: 1.6 });
+const EX = { depth: 0.42, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 2, steps: 1 };
+
+function shadowed(m) { m.castShadow = true; m.receiveShadow = true; return m; }
+
+// ---- movement plate: blued steel with Geneva stripes, gold bezel ----
+{
+  const plate = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(20.5, 20.5, 0.5, 96), PLATE));
+  plate.rotation.x = Math.PI / 2;
+  plate.position.set(0, 9.2, -1.35);
+  scene.add(plate);
+  for (let i = 0; i < 8; i++) {
+    const s = shadowed(new THREE.Mesh(new THREE.BoxGeometry(44, 2.15, 0.08), i % 2 ? STR_A : STR_B));
+    s.position.set(0, 9.2 + (i - 3.5) * 5.0, -1.05);
+    scene.add(s);
+  }
+  const bezel = shadowed(new THREE.Mesh(new THREE.TorusGeometry(20.7, 0.55, 24, 120), GOLD_W));
+  bezel.position.set(0, 9.2, -1.1);
+  scene.add(bezel);
+  // blued screws
+  const screwPos = [[14, 3.2], [-14, 3.2], [13, 15.6], [-13, 15.6], [0, -8.6]];
+  for (const [x, y] of screwPos) {
+    const g = new THREE.Group();
+    const head = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.22, 24), BLUED));
+    head.rotation.x = Math.PI / 2;
+    g.add(head);
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.07, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x0a0e16, metalness: 0.6, roughness: 0.5 }));
+    slot.position.z = 0.11;
+    slot.rotation.z = (x * 7 + y * 3) % Math.PI;
+    g.add(slot);
+    g.position.set(x, y, -0.98);
+    scene.add(g);
+  }
+}
+
+// ---- escape wheel (rotates about origin) ----
+const wheelGroup = new THREE.Group();
+{
+  // rim: annulus
+  const rimShape = new THREE.Shape();
+  rimShape.absarc(0, 0, R + 0.05, 0, Math.PI * 2, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, R - 1.9, 0, Math.PI * 2, true);
+  rimShape.holes.push(hole);
+  wheelGroup.add(shadowed(new THREE.Mesh(new THREE.ExtrudeGeometry(rimShape, EX), GOLD)));
+  // 5 flat spokes
+  for (let k = 0; k < 5; k++) {
+    const g = new THREE.Group();
+    const spoke = shadowed(new THREE.Mesh(new THREE.BoxGeometry(0.85, R - 3.0, 0.36), GOLD_W));
+    spoke.position.y = (1.15 + (R - 1.9)) / 2;
+    g.add(spoke);
+    g.rotation.z = k * (Math.PI * 2 / 5);
+    wheelGroup.add(g);
+  }
+  // hub + pin + jewel
+  const hub = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 0.85, 40), GOLD));
+  hub.rotation.x = Math.PI / 2;
+  wheelGroup.add(hub);
+  const pin = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1.7, 24), STEEL));
+  pin.rotation.x = Math.PI / 2;
+  wheelGroup.add(pin);
+  const chaton = shadowed(new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.14, 16, 32), GOLD));
+  chaton.position.z = 0.85;
+  wheelGroup.add(chaton);
+  const jewel = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.3, 24), RUBY);
+  jewel.rotation.x = Math.PI / 2;
+  jewel.position.z = 0.85;
+  wheelGroup.add(jewel);
+}
+// 15 saw teeth — the SAME polygon the SQL collides (toothWKT frame: (x,y)->(-y, R+x))
+const toothShape = new THREE.Shape();
+TOOTH.forEach(([dx, dy], i) => { const p = [-dy, R + dx]; i ? toothShape.lineTo(p[0], p[1]) : toothShape.moveTo(p[0], p[1]); });
+toothShape.closePath();
+const toothGeo = new THREE.ExtrudeGeometry(toothShape, { ...EX, depth: 0.42 });
+const toothMeshes = [];
+for (let k = 0; k < N_TEETH; k++) {
+  const t = shadowed(new THREE.Mesh(toothGeo, GOLD.clone()));
+  t.rotation.z = k * rad(PITCH);
+  wheelGroup.add(t);
+  toothMeshes.push(t);
+}
+scene.add(wheelGroup);
+
+// ---- rounded-rect helper (stones / lever) ----
+function roundedRectShape(w, h, r) {
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+  return s;
+}
+
+// ---- pallet fork (rotates about PIVOT) ----
+const forkGroup = new THREE.Group();
+forkGroup.position.set(PIVOT[0], PIVOT[1], 0.35);
+{
+  // anchor arms pivot→stones
+  for (const which of ['entry', 'exit']) {
+    const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+    const len = Math.hypot(lx, ly);
+    const ang = Math.atan2(ly, lx);
+    const arm = shadowed(new THREE.Mesh(new THREE.BoxGeometry(len, 0.62, 0.4), STEEL));
+    arm.position.set(lx / 2, ly / 2, 0);
+    arm.rotation.z = ang;
+    forkGroup.add(arm);
+    // gold chaton (slightly larger, behind) + ruby stone on top
+    const chaton = shadowed(new THREE.Mesh(
+      new THREE.ExtrudeGeometry(roundedRectShape(SW + 0.42, SL + 0.42, 0.2), { ...EX, depth: 0.3, bevelSize: 0.06, bevelThickness: 0.05 }), GOLD));
+    chaton.position.set(lx, ly, -0.12);
+    forkGroup.add(chaton);
+  }
+  // lever body: stem down + two fork horns up toward the balance (U with gap)
+  const lever = new THREE.Shape();
+  const L = [
+    [-0.22, -1.15], [0.22, -1.15], [0.22, 0.9], [0.30, 0.9],
+    [0.30, 4.62], [0.56, 4.62], [0.56, 0.55],
+    [-0.56, 0.55], [-0.56, 4.62], [-0.30, 4.62], [-0.30, 0.9],
+  ];
+  lever.moveTo(L[0][0], L[0][1]);
+  for (let i = 1; i < L.length; i++) lever.lineTo(L[i][0], L[i][1]);
+  lever.closePath();
+  forkGroup.add(shadowed(new THREE.Mesh(new THREE.ExtrudeGeometry(lever, { ...EX, depth: 0.38 }), STEEL)));
+  // impulse jewel at the stem tip (rubs the wheel side)
+  const ij = new THREE.Mesh(new THREE.SphereGeometry(0.22, 20, 16), RUBY.clone());
+  ij.position.set(0, -1.15, 0.12);
+  forkGroup.add(ij);
+  // pivot chaton + jewel
+  const pc = shadowed(new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.15, 16, 32), GOLD));
+  forkGroup.add(pc);
+  const pj = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.32, 24), RUBY.clone());
+  pj.rotation.x = Math.PI / 2;
+  pj.position.z = 0.1;
+  forkGroup.add(pj);
+  const pp = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 1.3, 16), STEEL));
+  pp.rotation.x = Math.PI / 2;
+  forkGroup.add(pp);
+}
+// ruby stones (the physics polygons, rendered) — added after the group so order is explicit
+const stoneMeshes = [];
+for (const which of ['entry', 'exit']) {
+  const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+  const st = shadowed(new THREE.Mesh(
+    new THREE.ExtrudeGeometry(roundedRectShape(SW + 0.06, SL + 0.06, 0.14), { ...EX, depth: 0.26, bevelSize: 0.05, bevelThickness: 0.04 }), RUBY.clone()));
+  st.position.set(lx, ly, 0.08);
+  forkGroup.add(st);
+  stoneMeshes.push(st);
+}
+scene.add(forkGroup);
+
+// ---- balance wheel (rotates about its own center) ----
+const BAL_C = [PIVOT[0], PIVOT[1] + 4.4];
+const balanceGroup = new THREE.Group();
+balanceGroup.position.set(BAL_C[0], BAL_C[1], 0.8);
+{
+  // rim: flat annulus band
+  const rimShape = new THREE.Shape();
+  rimShape.absarc(0, 0, 4.4, 0, Math.PI * 2, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, 3.95, 0, Math.PI * 2, true);
+  rimShape.holes.push(hole);
+  balanceGroup.add(shadowed(new THREE.Mesh(new THREE.ExtrudeGeometry(rimShape, { ...EX, depth: 0.3 }), GOLD)));
+  // timing screws on the rim
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4 + Math.PI / 8;
+    const sc = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 12), GOLD_W);
+    sc.position.set(4.17 * Math.cos(a), 4.17 * Math.sin(a), 0.06);
+    balanceGroup.add(sc);
+  }
+  // two flat spokes
+  for (const a of [0, Math.PI / 2]) {
+    const sp = shadowed(new THREE.Mesh(new THREE.BoxGeometry(8.3, 0.5, 0.26), GOLD_W));
+    sp.rotation.z = a;
+    balanceGroup.add(sp);
+  }
+  // hub + top jewel
+  const hub = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.9, 28), STEEL));
+  hub.rotation.x = Math.PI / 2;
+  balanceGroup.add(hub);
+  const bj = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.3, 24), RUBY.clone());
+  bj.rotation.x = Math.PI / 2;
+  bj.position.z = 0.55;
+  balanceGroup.add(bj);
+  // hairspring: Archimedean spiral, thin bright steel
+  const pts = [];
+  for (let i = 0; i <= 260; i++) {
+    const t = i / 260, ang = t * 4.5 * Math.PI * 2, r = 0.85 + t * 2.95;
+    pts.push(new THREE.Vector3(r * Math.cos(ang), r * Math.sin(ang), 0.34));
+  }
+  balanceGroup.add(new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 340, 0.045, 6),
+    new THREE.MeshStandardMaterial({ color: 0xcfd8e3, metalness: 1.0, roughness: 0.24 })));
+  // staff down to the pallet + impulse pin
+  const staff = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 5.1, 14), STEEL));
+  staff.position.set(0, -2.55, -0.25);
+  balanceGroup.add(staff);
+  const ip = new THREE.Mesh(new THREE.SphereGeometry(0.2, 18, 14), RUBY.clone());
+  ip.position.set(0, -5.0, -0.25);
+  balanceGroup.add(ip);
+}
+scene.add(balanceGroup);
+
+// ---------- frame state → meshes (the ONLY place the render reads physics) ----------
+let flashLevel = 0;
+function render3D(fork, blocked) {
+  _lastFork = fork; _lastBlocked = blocked;
+  wheelGroup.rotation.z = rad(wheel % 360);
+  forkGroup.rotation.z = rad(fork);
+  balanceGroup.rotation.z = rad(fork * 1.4);
+  // collision glow: driven by the SQL verdict
+  flashLevel = blocked ? 1 : flashLevel * 0.82;
+  const hot = flashLevel > 0.25;
+  for (const s of stoneMeshes) s.material = hot ? RUBY_HOT : RUBY;
+  for (const t of toothMeshes) {
+    t.material.emissive.setHex(hot ? 0x552000 : 0x000000);
+    t.material.emissiveIntensity = hot ? 0.8 : 0;
+  }
+  flash.intensity = flashLevel * 3.0;
+}
+
+// optional heatmap of the collision map (queried from DuckDB, drawn on the overlay)
+const mcv = $('mapcv'), mctx = mcv.getContext('2d');
+let mapData = null;
+async function loadMap() {
+  const r = await c.query(`SELECT wheel_deg, fork_deg, blocked FROM esc_map`);
+  mapData = r.toArray();
+}
+function drawMap() {
+  mctx.fillStyle = '#0b0d11'; mctx.fillRect(0, 0, mcv.width, mcv.height);
+  const cx = mcv.width / 2, cy = mcv.height / 2;
+  for (const row of mapData) {
+    const wd = Number(row.wheel_deg), fd = Number(row.fork_deg);
+    const px = cx + ((wd / W_MAX) - 0.5) * mcv.width * 0.92;
+    const py = cy - ((fd) / F_MAX) * mcv.height * 0.92 * 0.5;
+    mctx.fillStyle = row.blocked ? 'rgba(247,119,119,0.75)' : 'rgba(125,223,138,0.28)';
+    mctx.fillRect(px - 2, py - 2, 4.4, 4.4);
+  }
+  mctx.fillStyle = '#8b93a3'; mctx.font = '12px ui-monospace';
+  mctx.fillText('wheel phase 0 → 24° (one tooth pitch) →', 14, mcv.height - 12);
+  mctx.fillStyle = '#dfe4ec'; mctx.font = 'bold 13px ui-monospace';
+  mctx.fillText('collision map — every cell is one ST_Intersects verdict', 14, 26);
+}
+$('b-map').onclick = async () => {
+  if (!mapData) { setStatus('fetching map…'); await loadMap(); }
+  showMap = !showMap;
+  mcv.style.display = showMap ? 'block' : 'none';
+  if (showMap) drawMap();
+  $('b-map').textContent = showMap ? 'Show watch' : 'Show collision map';
+};
 
 // ---------- boot duckdb-wasm ----------
 const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
@@ -213,7 +548,7 @@ function tickSound() {
   try {
     const o = actx.createOscillator(), g = actx.createGain();
     o.type = 'square'; o.frequency.value = 2200;
-    g.gain.setValueAtTime(0.12, actx.currentTime);
+    g.gain.setValueAtTime(0.1, actx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.03);
     o.connect(g).connect(actx.destination);
     o.start(); o.stop(actx.currentTime + 0.035);
@@ -250,229 +585,6 @@ function updateHud(tSec) {
     $('v-rate').textContent = `${(wheel / PITCH).toFixed(1)} teeth in ${beats} beats`;
   }
 }
-
-// ---------- THREE.js scene: the watch as solid metal ----------
-const rad = d => d * Math.PI / 180;
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0d11);
-scene.fog = new THREE.Fog(0x0b0d11, 40, 80);
-const cam = new THREE.PerspectiveCamera(38, 1, 0.1, 200);
-cam.position.set(0, 9, 30);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(640, 640);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-$('scene').appendChild(renderer.domElement);
-const controls = new OrbitControls(cam, renderer.domElement);
-controls.target.set(0, 9, 0);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 12;
-controls.maxDistance = 60;
-controls.update();
-
-scene.add(new THREE.AmbientLight(0x50607a, 0.7));
-const key = new THREE.DirectionalLight(0xfff2dd, 1.5);
-key.position.set(12, 24, 18);
-scene.add(key);
-const rim = new THREE.DirectionalLight(0x4fc3f7, 0.6);
-rim.position.set(-18, 6, -14);
-scene.add(rim);
-const glint = new THREE.PointLight(0xc9a557, 0.8, 60);
-glint.position.set(0, 4, 10);
-scene.add(glint);
-// collision flash light — intensity driven by the SQL verdict, not the renderer
-const flash = new THREE.PointLight(0xff5544, 0, 25);
-flash.position.set(0, R + 1.5, 3);
-scene.add(flash);
-
-// backplate: a dark brushed disc behind the movement
-const plate = new THREE.Mesh(
-  new THREE.CylinderGeometry(21, 21, 0.4, 72),
-  new THREE.MeshStandardMaterial({ color: 0x141821, metalness: 0.75, roughness: 0.55 }));
-plate.rotation.x = Math.PI / 2;
-plate.position.set(0, 9.2, -1.4);
-scene.add(plate);
-// decorative Geneva stripes on the plate
-for (let i = 0; i < 7; i++) {
-  const s = new THREE.Mesh(
-    new THREE.BoxGeometry(40, 2.1, 0.05),
-    new THREE.MeshStandardMaterial({ color: 0x1b2130, metalness: 0.8, roughness: 0.35 }));
-  s.position.set(0, 9.2 + (i - 3) * 5.4, -1.15);
-  scene.add(s);
-}
-
-const GOLD = new THREE.MeshStandardMaterial({ color: 0xc9a557, metalness: 0.85, roughness: 0.32 });
-const GOLD_DARK = new THREE.MeshStandardMaterial({ color: 0x8a7434, metalness: 0.8, roughness: 0.4 });
-const STEEL = new THREE.MeshStandardMaterial({ color: 0x9fb4c8, metalness: 0.9, roughness: 0.28 });
-const RUBY = new THREE.MeshStandardMaterial({ color: 0xd23440, metalness: 0.3, roughness: 0.15,
-  emissive: 0x3a0808, emissiveIntensity: 0.4 });
-const RUBY_HOT = new THREE.MeshStandardMaterial({ color: 0xff5544, metalness: 0.3, roughness: 0.15,
-  emissive: 0xff2211, emissiveIntensity: 1.4 });
-const BAL = new THREE.MeshStandardMaterial({ color: 0x7ddf8a, metalness: 0.7, roughness: 0.3 });
-const EXTR = { depth: 0.5, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 1 };
-
-// ---- escape wheel group (rotates about origin) ----
-const wheelGroup = new THREE.Group();
-// rim: annulus
-{
-  const shape = new THREE.Shape();
-  shape.absarc(0, 0, R + 0.1, 0, Math.PI * 2, false);
-  const hole = new THREE.Path();
-  hole.absarc(0, 0, R - 1.7, 0, Math.PI * 2, true);
-  shape.holes.push(hole);
-  const rimMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(shape, EXTR), GOLD);
-  rimMesh.position.z = -0.25;
-  wheelGroup.add(rimMesh);
-}
-// hub
-{
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 0.9, 32), GOLD);
-  hub.rotation.x = Math.PI / 2;
-  wheelGroup.add(hub);
-  const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 1.4, 20), STEEL);
-  pin.rotation.x = Math.PI / 2;
-  wheelGroup.add(pin);
-}
-// 5 spokes
-for (let k = 0; k < 5; k++) {
-  const spoke = new THREE.Mesh(new THREE.BoxGeometry(1.0, R - 2.4, 0.42), GOLD_DARK);
-  spoke.position.set(0, (1.1 + R - 1.7) / 2 - 1.1, 0);
-  const g = new THREE.Group();
-  spoke.position.y = (1.15 + (R - 1.7)) / 2;
-  spoke.position.x = 0;
-  g.add(spoke);
-  g.rotation.z = k * (Math.PI * 2 / 5);
-  wheelGroup.add(g);
-}
-// 15 saw-tooth teeth (same polygon the SQL collides)
-// tooth points must match the SQL frame: toothWKT() maps (x,y)->(-y, R+x) so the
-// active tooth sits at the TOP (+y) at wheel=0 — where the fork's stones reach.
-const toothShape = new THREE.Shape();
-TOOTH.forEach(([dx, dy], i) => { const p = [-dy, R + dx]; i ? toothShape.lineTo(p[0], p[1]) : toothShape.moveTo(p[0], p[1]); });
-toothShape.closePath();
-const toothGeo = new THREE.ExtrudeGeometry(toothShape, { ...EXTR, depth: 0.5 });
-toothGeo.translate(0, 0, -0.25);
-const toothMeshes = [];
-for (let k = 0; k < N_TEETH; k++) {
-  const t = new THREE.Mesh(toothGeo, GOLD.clone());
-  t.rotation.z = k * rad(PITCH);
-  wheelGroup.add(t);
-  toothMeshes.push(t);
-}
-scene.add(wheelGroup);
-
-// ---- pallet fork group (rotates about PIVOT) ----
-const forkGroup = new THREE.Group();
-forkGroup.position.set(PIVOT[0], PIVOT[1], 0);
-{
-  const lever = new THREE.Mesh(new THREE.BoxGeometry(7.0, 0.55, 0.5), STEEL);
-  forkGroup.add(lever);
-  // anchor jewel at pivot
-  const jewel = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 1.1, 24),
-    new THREE.MeshStandardMaterial({ color: 0xe05252, metalness: 0.4, roughness: 0.2, emissive: 0x401010, emissiveIntensity: 0.4 }));
-  jewel.rotation.x = Math.PI / 2;
-  forkGroup.add(jewel);
-}
-const stoneMeshes = [];
-for (const which of ['entry', 'exit']) {
-  const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
-  // arm from pivot to stone
-  const len = Math.hypot(lx, ly);
-  const ang = Math.atan2(ly, lx);
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(len, 0.5, 0.42), STEEL);
-  arm.position.set(lx / 2, ly / 2, 0);
-  arm.rotation.z = ang;
-  forkGroup.add(arm);
-  // the stone (long axis vertical at fork=0, exactly the polygon the SQL uses)
-  const stone = new THREE.Mesh(new THREE.BoxGeometry(SW, SL, 0.55), RUBY.clone());
-  stone.position.set(lx, ly, 0);
-  forkGroup.add(stone);
-  stoneMeshes.push(stone);
-}
-scene.add(forkGroup);
-
-// ---- balance wheel group (rotates about its own center) ----
-const BAL_C = [PIVOT[0], PIVOT[1] + 4.4];
-const balanceGroup = new THREE.Group();
-balanceGroup.position.set(BAL_C[0], BAL_C[1], 0.3);
-{
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.24, 16, 96, Math.PI * 1.55), BAL);
-  balanceGroup.add(ring);
-  for (const a of [0, Math.PI]) {
-    const spoke = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.34, 0.3), BAL);
-    spoke.position.set(2.1 * Math.cos(a), 2.1 * Math.sin(a), 0);
-    spoke.rotation.z = a;
-    balanceGroup.add(spoke);
-  }
-  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.2, 24),
-    new THREE.MeshStandardMaterial({ color: 0xe05252, metalness: 0.4, roughness: 0.2, emissive: 0x401010, emissiveIntensity: 0.4 }));
-  hub.rotation.x = Math.PI / 2;
-  balanceGroup.add(hub);
-  // hairspring: Archimedean spiral tube
-  const pts = [];
-  for (let i = 0; i <= 240; i++) {
-    const t = i / 240, ang = t * 4.5 * Math.PI * 2, r = 0.9 + t * 2.9;
-    pts.push(new THREE.Vector3(r * Math.cos(ang), r * Math.sin(ang), 0.28));
-  }
-  const spring = new THREE.Mesh(
-    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 320, 0.05, 6),
-    new THREE.MeshStandardMaterial({ color: 0x6fbf76, metalness: 0.8, roughness: 0.35 }));
-  balanceGroup.add(spring);
-  // balance staff pin down to the pallet area
-  const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 4.6, 12), STEEL);
-  staff.position.set(0, -2.3, -0.2);
-  staff.rotation.x = 0;
-  balanceGroup.add(staff);
-}
-scene.add(balanceGroup);
-
-// ---------- frame state → meshes (the ONLY place the render reads physics) ----------
-let flashLevel = 0;
-function render3D(fork, blocked) {
-  _lastFork = fork; _lastBlocked = blocked;
-  wheelGroup.rotation.z = rad(wheel % 360);
-  forkGroup.rotation.z = rad(fork);
-  balanceGroup.rotation.z = rad(fork * 1.4);
-  // collision glow: driven by the SQL verdict
-  flashLevel = blocked ? 1 : flashLevel * 0.82;
-  const hot = flashLevel > 0.25;
-  for (const s of stoneMeshes) s.material = hot ? RUBY_HOT : RUBY;
-  for (const t of toothMeshes) {
-    t.material.emissive.setHex(hot ? 0x551100 : 0x000000);
-    t.material.emissiveIntensity = hot ? 0.9 : 0;
-  }
-  flash.intensity = flashLevel * 3.2;
-}
-
-// optional heatmap of the collision map (queried from DuckDB, drawn on the overlay)
-const mcv = $('mapcv'), mctx = mcv.getContext('2d');
-let mapData = null;
-async function loadMap() {
-  const r = await c.query(`SELECT wheel_deg, fork_deg, blocked FROM esc_map`);
-  mapData = r.toArray();
-}
-function drawMap() {
-  mctx.fillStyle = '#0b0d11'; mctx.fillRect(0, 0, mcv.width, mcv.height);
-  const cx = mcv.width / 2, cy = mcv.height / 2;
-  for (const row of mapData) {
-    const wd = Number(row.wheel_deg), fd = Number(row.fork_deg);
-    const px = cx + ((wd / W_MAX) - 0.5) * mcv.width * 0.92;
-    const py = cy - ((fd) / F_MAX) * mcv.height * 0.92 * 0.5;
-    mctx.fillStyle = row.blocked ? 'rgba(247,119,119,0.75)' : 'rgba(125,223,138,0.28)';
-    mctx.fillRect(px - 2, py - 2, 4.4, 4.4);
-  }
-  mctx.fillStyle = '#8b93a3'; mctx.font = '12px ui-monospace';
-  mctx.fillText('wheel phase 0 → 24° (one tooth pitch) →', 14, mcv.height - 12);
-  mctx.fillStyle = '#dfe4ec'; mctx.font = 'bold 13px ui-monospace';
-  mctx.fillText('collision map — every cell is one ST_Intersects verdict', 14, 26);
-}
-$('b-map').onclick = async () => {
-  if (!mapData) { setStatus('fetching map…'); await loadMap(); }
-  showMap = !showMap;
-  mcv.style.display = showMap ? 'block' : 'none';
-  if (showMap) drawMap();
-  $('b-map').textContent = showMap ? 'Show watch' : 'Show collision map';
-};
 
 // ---------- main loop: virtual-clock physics substeps (each one SQL query) ----------
 let vClock = 0, lastRender = null;
