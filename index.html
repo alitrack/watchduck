@@ -838,8 +838,9 @@ let solidInfo = null, _clash3d = false, takeApart = null;
   for (const p of SOLID_PARTS) {
     const rows = (await c.query(`SELECT x1,y1,z1,x2,y2,z2,x3,y3,z3 FROM solids WHERE part='${p.id}'`)).toArray();
     const pos = new Float32Array(rows.length * 9);
+    const cols = ['x1','y1','z1','x2','y2','z2','x3','y3','z3'];
     rows.forEach((r, i) => {
-      for (let j = 0; j < 9; j++) pos[i*9 + j] = Number(r[j]);   // local frame; the group supplies the world offset
+      for (let j = 0; j < 9; j++) pos[i*9 + j] = Number(r[cols[j]]);   // toArray() rows are objects keyed by column name
     });
     p.overlay.geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     p.overlay.geometry.computeBoundingSphere();
@@ -923,8 +924,7 @@ let solidInfo = null, _clash3d = false, takeApart = null;
       // nothing is free: if the remaining parts lock ONLY each other, they form
       // the escapement pair (wheel + fork hold one another at rest — that IS the
       // mechanism). The reference raises 'stuck'; a watchmaker lifts the pair.
-      const rem = (await c.query(`SELECT part, s FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)
-        .toArray());
+      const rem = (await c.query(`SELECT part, s FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray();
       if (rem.length >= 2 && !unitTaken) {
         const u = (await c.query(`
           SELECT a.part, a.s FROM ta_parts a
