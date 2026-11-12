@@ -8,7 +8,7 @@
 
 ## 在线体验
 
-[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（3D 视图，Three.js：立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，可拖拽旋转）；2D 工程视图在 [index2d.html](https://alitrack.github.io/watchduck/index2d.html)。整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
+[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（3D 视图，Three.js：立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，可拖拽旋转）；2D 工程视图在 [index2d.html](https://alitrack.github.io/watchduck/index2d.html)；**Ep5 全机芯（34 零件 / 107 件）在 [index34.html](https://alitrack.github.io/watchduck/index34.html)——拆卸循环 `m_blocked()` 直接在浏览器 DuckDB-WASM 里逐轮跑 SQL，8 轮黄金表浏览器内复现**。几何是 868KB 预求解快照（wasm 单线程线性内存 ~256MB 装不下 107 件的现场宏生成，OOM 实测），相位烘焙在几何里，但每条拆卸判决仍是浏览器里的一条 SQL。整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
 
 
 ## 你会看到什么
