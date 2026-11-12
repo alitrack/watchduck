@@ -99,6 +99,12 @@
       <div class="hint">solids = wheel rim · 2 pallet stones · lever · balance rim — the wireframe you toggle is read back from the verified DB table</div>
     </div>
     <div class="card">
+      <h2>Take apart — 拆卸顺序（Ep5）</h2>
+      <div id="v-take" style="font-size:12px;line-height:1.6">—</div>
+      <div class="hint">每轮：所有能沿 -z（背面）滑出而不碰任何还在表里的零件一起走——每轮一条 SQL 查询</div>
+      <div class="btns" style="margin-top:8px"><button id="b-take" disabled>Take apart</button></div>
+    </div>
+    <div class="card">
       <h2>The SQL doing the physics right now</h2>
       <div class="sql" id="sql-view">—</div>
     </div>
@@ -138,6 +144,13 @@ function toothWKT() {
   return 'POLYGON((' + pts.join(', ') + '))';
 }
 function stoneWKTaboutPivot(which) {
+  // The stone's LOCAL-frame polygon (about the fork pivot at the ORIGIN) — the
+  // same local frame the 3D stone meshes use, so overlay rows, meshes and the
+  // SQL collision share one source of truth. The per-frame SQL applies
+  //   ST_Translate(ST_Rotate(local, fork), PIVOT)
+  // which is mathematically IDENTICAL to scripts/geometry.py stone_poly (rotate
+  // the stone center about the pivot, then offset by the rotated long/wide dirs):
+  // R(lx±hw, ly±hl) = R(lx,ly) ± hw·(cos,sin) ± hl·(−sin,cos) = center ± hw·wid ± hl·long.
   const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
   const longd = [0,1], widd = [1,0];
   const hw = SW/2, hl = SL/2;
@@ -395,7 +408,7 @@ const SOLID_PARTS = [];
     id: 'wheel', rows: flatToRows(flat, [outerBnd, holeBnd], z0, z1, nS),
     wkt: ringWKT(flat, outerBnd), holeWkt: ringWKT(flat, holeBnd),
     clashWkt: toothWKT(),   // 3D clash is checked at the contact pair: tooth vs stone
-    dx: 0, dy: 0, spin: 'wheel', z0, z1,
+    dx: 0, dy: 0, spin: 'wheel', z0, z1, group: 'wheel',
   });
 }
 // (2) pallet stones — the exact physics rectangles (local frame about PIVOT)
@@ -407,7 +420,7 @@ for (const which of ['entry', 'exit']) {
   SOLID_PARTS.push({
     id: 'stone_' + which, rows: flatToRows(c, [[0, 1, 2, 3]], z0, z1, undefined),
     wkt: 'POLYGON((' + p.join(',') + '))', clashWkt: 'POLYGON((' + p.join(',') + '))',
-    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1,
+    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1, group: 'fork',
   });
 }
 // (3) fork lever body — the same 11-point U the page extrudes
@@ -422,7 +435,7 @@ for (const which of ['entry', 'exit']) {
   SOLID_PARTS.push({
     id: 'lever', rows: flatToRows(flat, [Array.from(L.keys())], z0, z1, undefined),
     wkt: 'POLYGON((' + L.map(([x, y]) => R5(x) + ' ' + R5(y)).concat([R5(L[0][0]) + ' ' + R5(L[0][1])]).join(',') + '))',
-    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1, selfX: true,
+    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1, selfX: true, group: 'fork',
   });
 }
 // (4) balance rim — annulus 3.95..4.4 about its own center (world offset BAL_C)
@@ -434,7 +447,7 @@ for (const which of ['entry', 'exit']) {
   SOLID_PARTS.push({
     id: 'balance_rim', rows: flatToRows(flat, [Array.from({ length: nO }, (_, i) => i), Array.from({ length: nH }, (_, i) => nO + i)], z0, z1, nO),
     wkt: ringWKT(flat, Array.from({ length: nO }, (_, i) => i)), holeWkt: ringWKT(flat, Array.from({ length: nH }, (_, i) => nO + i)),
-    dx: PIVOT[0], dy: PIVOT[1] + 4.4, spin: 'balance', z0, z1,
+    dx: PIVOT[0], dy: PIVOT[1] + 4.4, spin: 'balance', z0, z1, group: 'balance',
   });
 }
 const SOLID = SOLID_PARTS[0];   // the wheel (kept for references)
@@ -633,6 +646,22 @@ window.__wdHands = hands;   // diagnostic: proves dial+hands module code execute
 
 // ---------- frame state → meshes (the ONLY place the render reads physics) ----------
 let flashLevel = 0;
+// Ep5 take-apart explode animation: group world-z offsets, eased toward targets
+const explode = { t: { wheel: 0, fork: 0, balance: 0 }, c: { wheel: 0, fork: 0, balance: 0 } };
+const EX_BASE = {};   // captured after the scene is built (display layering z)
+function stepExplode() {
+  if (wheelGroup && EX_BASE.wheel === undefined) { EX_BASE.wheel = wheelGroup.position.z; EX_BASE.fork = forkGroup.position.z; EX_BASE.balance = balanceGroup.position.z; }
+  let moving = false;
+  for (const g of Object.keys(explode.t)) {
+    const d = explode.t[g] - explode.c[g];
+    if (Math.abs(d) > 0.002) { explode.c[g] += d * 0.08; moving = true; }
+    else explode.c[g] = explode.t[g];
+  }
+  if (wheelGroup) wheelGroup.position.z = EX_BASE.wheel + explode.c.wheel;
+  if (forkGroup) forkGroup.position.z = EX_BASE.fork + explode.c.fork;
+  if (balanceGroup) balanceGroup.position.z = EX_BASE.balance + explode.c.balance;
+  return moving;
+}
 function render3D(fork, blocked) {
   _lastFork = fork; _lastBlocked = blocked;
   wheelGroup.rotation.z = rad(wheel % 360);
@@ -748,7 +777,7 @@ $('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number
 // DB verified. The same profiles drive the per-frame 3D interference check:
 // static z-band overlap (computed below) AND 2D profile overlap after each
 // part's rotation — the rigorous ST_3DIntersects replacement, one query/frame.
-let solidInfo = null, _clash3d = false;
+let solidInfo = null, _clash3d = false, takeApart = null;
 {
   await c.query(`CREATE OR REPLACE TABLE solids(part VARCHAR,
     x1 DOUBLE,y1 DOUBLE,z1 DOUBLE, x2 DOUBLE,y2 DOUBLE,z2 DOUBLE, x3 DOUBLE,y3 DOUBLE,z3 DOUBLE)`);
@@ -825,12 +854,127 @@ let solidInfo = null, _clash3d = false;
   const zOverlap = (a, b) => a[0] < b[1] && b[0] < a[1];
   console.info('[watchduck] physical z-bands wheel', wheelB, 'stone', stoneB,
     'overlap =', zOverlap(wheelB, stoneB), '(coplanar mechanism → the 2D profile test decides)');
+
+  // ---------- Ep5 take_apart: iterative disassembly, ONE SQL query per round ----------
+  // Parts slide out off the back (-z). "In the way" = 3D interference: the z-band
+  // overlap AND the 2D profile overlap — the same rigorous test as p_frame.
+  // Z-BANDS ARE WORLD (the mechanism is layered in z): the fork's stem runs in a
+  // slot in the wheel plane (0.35..0.73), the balance sits above it (0.8..1.1).
+  // At rest the fork's 2D profile is in the GAPS between wheel teeth (0 contact),
+  // but the horns reach into the balance plane — so the DB derives:
+  //   round 1: fork + balance leave together   round 2: wheel.
+  {
+    const byId = id => SOLID_PARTS.find(p => p.id === id);
+    const W = (x, y) => R5(x + PIVOT[0]) + ' ' + R5(y + PIVOT[1]);
+    const rectW = (x0, y0, x1, y1) =>
+      `POLYGON((${W(x0, y0)},${W(x1, y0)},${W(x1, y1)},${W(x0, y1)},${W(x0, y0)}))`;
+    // fork pieces in the world frame (the self-intersecting U is NOT needed for
+    // interference — its valid rectangle decomposition covers it piecewise)
+    const stem   = rectW(-0.22, -1.15, 0.22, 0.9);
+    const crossb = rectW(-0.56, 0.55, 0.56, 0.9);
+    const hornL  = rectW(-0.56, 0.9, -0.30, 4.62);
+    const hornR  = rectW(0.30, 0.9, 0.56, 4.62);
+    // the pallet STONES travel with the fork — and at rest it is a stone that
+    // sits in a tooth (that's the lock), so the fork's profile must include them
+    const stoneW = L => {
+      const [lx, ly] = L, hw = SW / 2, hl = SL / 2;
+      return `POLYGON((${W(lx + hw, ly + hl)},${W(lx + hw, ly - hl)},${W(lx - hw, ly - hl)},${W(lx - hw, ly + hl)},${W(lx + hw, ly + hl)}))`;
+    };
+    const stoneE = stoneW(ENTRY), stoneX = stoneW(EXIT);
+    const ZB = {
+      wheel:   [0.00, 0.42],   // group z 0      + local 0..0.42
+      fork:    [0.35, 0.73],   // group z 0.35   + local 0..0.38
+      balance: [0.80, 1.10],   // group z 0.8    + local 0..0.30
+    };
+    const PLATE = 0.3;   // main-plate z — the reference way-out rule (center vs plate)
+    await c.query(`
+      CREATE OR REPLACE TABLE ta_parts AS
+      SELECT 'wheel' AS part, ST_GeomFromText('${byId('wheel').wkt}') AS g,
+             ${ZB.wheel[0]} AS z0, ${ZB.wheel[1]} AS z1, CASE WHEN (${ZB.wheel[0]} + ${ZB.wheel[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END AS s
+      UNION ALL SELECT 'fork',
+        ST_Union(ST_Union(ST_Union(ST_Union(ST_Union(ST_GeomFromText('${stem}'), ST_GeomFromText('${crossb}')),
+                          ST_GeomFromText('${hornL}')), ST_GeomFromText('${hornR}')),
+                          ST_GeomFromText('${stoneE}')), ST_GeomFromText('${stoneX}')),
+        ${ZB.fork[0]}, ${ZB.fork[1]}, CASE WHEN (${ZB.fork[0]} + ${ZB.fork[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END
+      UNION ALL SELECT 'balance', ST_GeomFromText('${byId('balance_rim').wkt}'),
+        ${ZB.balance[0]}, ${ZB.balance[1]}, CASE WHEN (${ZB.balance[0]} + ${ZB.balance[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END`);
+    await c.query(`CREATE OR REPLACE TABLE ta_removed(part VARCHAR, rnd INT, grp VARCHAR)`);
+    // "b is in the way of a's exit (a.s)": 2D profiles overlap AND b lies AHEAD
+    // of a on its exit path (s=+1 off the front: b.z1 > a.z0 ; s=-1 off the back: b.z0 < a.z1)
+    const ONPATH = `(CASE WHEN a.s = 1 THEN b.z1 > a.z0 + 1e-9 ELSE b.z0 < a.z1 - 1e-9 END)`;
+    const rounds = [];
+    let unitTaken = false;
+    for (let r = 1; r <= 6; r++) {
+      // the reference take_apart(): everything that can go in a round goes together
+      const solo = (await c.query(`
+        SELECT a.part, a.s FROM ta_parts a
+        WHERE a.part NOT IN (SELECT part FROM ta_removed)
+          AND NOT EXISTS (SELECT 1 FROM ta_parts b
+                          WHERE b.part <> a.part
+                            AND b.part NOT IN (SELECT part FROM ta_removed)
+                            AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
+      if (solo.length) {
+        rounds.push({ parts: solo, grp: 'free — clear path' });
+        await c.query(`INSERT INTO ta_removed VALUES ` +
+          solo.map(p => `('${p.part}', ${r}, 'free')`).join(','));
+        continue;
+      }
+      // nothing is free: if the remaining parts lock ONLY each other, they form
+      // the escapement pair (wheel + fork hold one another at rest — that IS the
+      // mechanism). The reference raises 'stuck'; a watchmaker lifts the pair.
+      const rem = (await c.query(`SELECT part, s FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)
+        .toArray());
+      if (rem.length >= 2 && !unitTaken) {
+        const u = (await c.query(`
+          SELECT a.part, a.s FROM ta_parts a
+          WHERE a.part IN (${rem.map(p => `'${p.part}'`).join(',')})
+            AND EXISTS (SELECT 1 FROM ta_parts b
+                        WHERE b.part <> a.part
+                          AND b.part IN (${rem.map(p => `'${p.part}'`).join(',')})
+                          AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
+        if (u.length === rem.length) {   // every remaining part is blocked, and only by the unit
+          rounds.push({ parts: u, grp: 'unit — mutually locked at rest (the escapement), out together' });
+          await c.query(`INSERT INTO ta_removed VALUES ` +
+            u.map(p => `('${p.part}', ${r}, 'unit')`).join(','));
+          unitTaken = true;
+          continue;
+        }
+      }
+      break;   // truly stuck
+    }
+    const stuck = (await c.query(`SELECT count(*)::DOUBLE AS n FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray()[0];
+    takeApart = { rounds, stuck: Number(stuck.n) };
+  }
 }
 $('b-solid').onclick = () => {
   const on = !SOLID_PARTS[0].overlay.visible;
   SOLID_PARTS.forEach(p => p.overlay.visible = on);
   $('b-solid').textContent = on ? 'DB solids: on' : 'DB solids: off';
 };
+// ---------- Ep5 take_apart: show the DB-computed rounds, animate the explode ----------
+function showTakeApart(on) {
+  const el = $('v-take');
+  if (!on || !takeApart) {
+    el.innerHTML = '—';
+    for (const g of Object.keys(explode.t)) explode.t[g] = 0;
+    $('b-take').textContent = 'Take apart';
+    return;
+  }
+  const way = p => Number(p.s) === 1 ? 'off the front (+z)' : 'off the back (−z)';
+  el.innerHTML = takeApart.rounds.map((r, i) =>
+    `<b style="color:var(--acc)">round ${i + 1}</b> — ${r.grp}<br>` +
+    r.parts.map(p => `&nbsp;&nbsp;<b>${p.part}</b> → ${way(p)}`).join('<br>')
+  ).join('<br>') + (takeApart.stuck ? `<br><span class="err">stuck: ${takeApart.stuck} part(s)</span>` : '');
+  // explode: each part moves along ITS exit direction; later rounds sit further out
+  const nR = takeApart.rounds.length;
+  takeApart.rounds.forEach((r, i) => {
+    const out = (nR - i) * 1.6 + 0.8;
+    for (const p of r.parts)
+      explode.t[p.group] = Number(p.s) === 1 ? out : -out;
+  });
+  $('b-take').textContent = 'Assemble';
+}
+$('b-take').onclick = () => showTakeApart(!($('b-take').textContent === 'Assemble'));
 // prepared per-frame query: physics verdict AND solid-profile 3D clash, ONE statement
 // blocked uses COALESCE(…,1) so a grid miss means BLOCKED (same as p_lookup:
 // an absent state never releases the wheel) — a bare subquery would yield NULL→0.
@@ -960,12 +1104,13 @@ async function loop() {
 function spin() {
   controls.update();
   updateHands();                 // dial always shows real current time
+  stepExplode();
   renderer.render(scene, cam);
   requestAnimationFrame(spin);
 }
 spin();
 
-$('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false; $('b-solid').disabled = false;
+$('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false; $('b-solid').disabled = false; $('b-take').disabled = false;
 $('b-run').onclick = () => {
   if (!actx) { try { actx = new AudioContext(); } catch (e) {} }
   running = !running;
