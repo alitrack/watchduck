@@ -887,7 +887,14 @@ let solidInfo = null, _clash3d = false, takeApart = null;
       fork:    [0.35, 0.73],   // group z 0.35   + local 0..0.38
       balance: [0.80, 1.10],   // group z 0.8    + local 0..0.30
     };
-    const PLATE = 0.3;   // main-plate z — the reference way-out rule (center vs plate)
+    // Main-plate reference plane for the way-out rule. In this scene the DIAL/
+    // hands are at -z (z=-2.2) and the movement is on the +z side (the viewer).
+    // Every movement part sits above z=0, so a reference plane at z=0 makes all
+    // parts exit toward +z (out of the movement, toward the viewer) — away from
+    // the pointer side, the natural "pull the wheel out toward yourself" motion.
+    // (A plane at 0.3/0.6 put the wheel center (z~0.21) below it, sending the
+    // wheel off toward the dial — the bug the user saw.)
+    const PLATE = 0.0;
     await c.query(`
       CREATE OR REPLACE TABLE ta_parts AS
       SELECT 'wheel' AS part, ST_GeomFromText('${byId('wheel').wkt}') AS g,
