@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>watchduck — Ep5 full movement · 34-part take-apart in DuckDB-WASM</title>
+<style>
+  :root {
+    --bg:#0b0d11; --panel:#171a21; --line:#262b36; --txt:#dfe4ec;
+    --dim:#8b93a3; --acc:#4fc3f7; --gold:#c9a557; --green:#7ddf8a; --red:#ff7b72;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family: ui-monospace,"SF Mono",Menlo,Consolas,monospace; background:var(--bg); color:var(--txt); }
+  header { padding:16px 22px 8px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0 0 3px; letter-spacing:.4px; font-weight:600; }
+  h1 .accent { color:var(--acc); }
+  h1 .tag { color:var(--gold); font-size:12px; margin-left:8px; }
+  .sub { color:var(--dim); font-size:12px; line-height:1.5; max-width:960px; }
+  main { display:flex; flex-wrap:wrap; gap:14px; padding:14px 22px 28px; }
+  .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; flex:1 1 auto; min-width:320px; position:relative; }
+  #scene { display:block; width:100%; height:calc(100vh - 190px); min-height:480px; background:#0b0d11; border-radius:8px; }
+  aside { width:320px; flex:0 0 320px; display:flex; flex-direction:column; gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .card h3 { margin:0 0 8px; font-size:12px; letter-spacing:1px; color:var(--dim); text-transform:uppercase; font-weight:600; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; gap:8px; padding:2px 0; font-size:12.5px; }
+  .row .v { color:var(--acc); font-weight:600; text-align:right; }
+  .row .v.ok { color:var(--green); }
+  .row .v.bad { color:var(--red); }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  button { font:inherit; font-size:12.5px; background:#1e2330; color:var(--txt); border:1px solid var(--line); border-radius:7px; padding:7px 12px; cursor:pointer; }
+  button:hover { border-color:var(--acc); color:var(--acc); }
+  button.primary { border-color:var(--acc); color:var(--acc); }
+  button:disabled { opacity:.4; cursor:default; }
+  #rounds { max-height:220px; overflow:auto; font-size:11.5px; }
+  #rounds .r { padding:4px 0; border-bottom:1px dashed #1d222c; }
+  #rounds .r .n { color:var(--gold); font-weight:700; margin-right:6px; }
+  #rounds .r .out { color:var(--dim); }
+  #rounds .r.live { background:#152030; border-radius:5px; margin:0 -6px; padding:4px 6px; }
+  #status { font-size:11.5px; color:var(--dim); min-height:16px; margin-top:6px; }
+  .legend { font-size:11px; color:var(--dim); line-height:1.7; }
+  .legend b { color:var(--txt); font-weight:600; }
+  @media (max-width:900px) { aside { width:100%; flex:1 1 auto; } #scene { height:60vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>watchduck <span class="accent">· Ep5 全机芯</span><span class="tag">34 parts · 107 pieces · take-apart = live DuckDB-WASM SQL</span></h1>
+  <div class="sub">
+    几何与相位离线由已验收的 native DuckDB 管线求解（8 轮拆卸黄金表 GOLDEN MATCH），快照 <b>868 KB</b> 装配进浏览器。
+    点 <b>Take apart</b>：拆卸循环在浏览器 DuckDB-WASM 里逐轮跑 <code>m_blocked()</code>（每零件每轮一条 SQL），
+    DB 说了算——本轮谁能走，本轮才动。零件沿 DB 给的退出轴爆炸（+z 表前 / −z 表后 / +x 表冠侧）。
+  </div>
+</header>
+<main>
+  <div class="canvas-wrap"><canvas id="scene"></canvas></div>
+  <aside>
+    <div class="card">
+      <h3>engine</h3>
+      <div class="row"><span>duckdb-wasm</span><span class="v" id="v-ver">loading…</span></div>
+      <div class="row"><span>spatial extension</span><span class="v" id="v-ext">—</span></div>
+      <div class="row"><span>snapshot pieces</span><span class="v" id="v-pieces">—</span></div>
+      <div class="row"><span>rounds computed</span><span class="v" id="v-rounds">—</span></div>
+      <div class="row"><span>golden table</span><span class="v" id="v-gold">—</span></div>
+      <div class="btns">
+        <button id="b-take" class="primary" disabled>Take apart</button>
+        <button id="b-assemble" disabled>Assemble</button>
+        <button id="b-step" disabled>Step +1 round</button>
+      </div>
+      <div id="status">booting…</div>
+    </div>
+    <div class="card">
+      <h3>rounds（DB 逐轮判决）</h3>
+      <div id="rounds">—</div>
+    </div>
+    <div class="card legend">
+      <h3>图例</h3>
+      <div><b>钢 steel</b> · <b style="color:#e2554f">红宝石 ruby</b> · <b style="color:var(--gold)">镀金 gilt</b> ·
+      <b style="color:#5f6c80">夹板 plate</b> · <b style="color:#4d7bd1">烤蓝 blued</b> · <b style="color:#9fb4c8">发条 spring</b></div>
+      <div style="margin-top:4px">退出方向：↑ 表前（+z）· ↓ 表后（−z）· → 表冠（+x）</div>
+      <div style="margin-top:4px">拖拽旋转 · 滚轮缩放 · 右键平移</div>
+    </div>
+  </aside>
+</main>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+    "duckdb-wasm": "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0/+esm"
+  }
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/earcut.min.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as duckdb from 'duckdb-wasm';
+
+const $ = id => document.getElementById(id);
+const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
+
+// ---------- coordinate mapping: watch (x, y, z) -> three ----------
+// watch frame: x = toward crown (3 o'clock), y = 12 o'clock, z = toward viewer (front).
+// three: (x, -y, z). Clockwise on the watch face => -z rotation in three (same as index.html).
+const MAP = (x, y) => [x, -y];
+
+// ---------- materials (dark theme, high contrast) ----------
+const MATS = {
+  steel:  new THREE.MeshStandardMaterial({ color:0x9aa7b8, metalness:0.85, roughness:0.32 }),
+  ruby:   new THREE.MeshStandardMaterial({ color:0xd9413b, metalness:0.35, roughness:0.18, emissive:0x330000 }),
+  gilt:   new THREE.MeshStandardMaterial({ color:0xc9a557, metalness:0.9,  roughness:0.30 }),
+  plate:  new THREE.MeshStandardMaterial({ color:0x39404e, metalness:0.7,  roughness:0.55 }),
+  blued:  new THREE.MeshStandardMaterial({ color:0x3563c4, metalness:0.85, roughness:0.25 }),
+  spring: new THREE.MeshStandardMaterial({ color:0x9fb4c8, metalness:0.9,  roughness:0.2, side:THREE.DoubleSide }),
+  dial:   new THREE.MeshStandardMaterial({ color:0xe8e2d4, metalness:0.05, roughness:0.7 }),
+};
+MATS.spring.dblSide = true;
+
+// ---------- three scene ----------
+const canvas = $('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d11);
+scene.fog = new THREE.Fog(0x0b0d11, 90, 220);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 500);
+camera.position.set(14, -12, 44);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 0, 1.5);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxDistance = 160;
+
+scene.add(new THREE.AmbientLight(0x8899bb, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(20, -30, 40); scene.add(key);
+const rim = new THREE.DirectionalLight(0x6688ff, 0.5); rim.position.set(-30, 20, -10); scene.add(rim);
+const fill = new THREE.PointLight(0xffd9a0, 0.5, 120); fill.position.set(0, 10, 25); scene.add(fill);
+const grid = new THREE.GridHelper(60, 30, 0x1c2330, 0x141a24); grid.position.y = 13.5; scene.add(grid);
+
+const movement = new THREE.Group();
+scene.add(movement);
+
+// ---------- parse WKT -> rings ----------
+function parseWKT(wkt) {
+  // returns array of rings; ring = [[x,y],...]. POLYGON: [outer, holes...]; MULTIPOLYGON: first polygon's rings.
+  const rings = [];
+  const polyRe = /POLYGON\s*\((.*)\)\s*$/;
+  function ringFrom(s) {
+    const pts = s.trim().match(/(-?[0-9]+\.?[0-9]*)\s+(-?[0-9]+\.?[0-9]*)/g) || [];
+    const r = pts.map(p => { const [a, b] = p.split(/\s+/); return [+a, +b]; });
+    if (r.length && (r[0][0] !== r[r.length-1][0] || r[0][1] !== r[r.length-1][1])) r.push(r[0]);
+    return r;
+  }
+  if (wkt.startsWith('MULTIPOLYGON')) {
+    // take all rings of all polygons (rare, 3 pieces)
+    const inner = wkt.slice(wkt.indexOf('((') + 2);
+    let depth = 2, start = 0;
+    const polys = [];
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '(') depth++;
+      if (inner[i] === ')') { depth--; if (depth === 1) { polys.push(inner.slice(start, i)); start = i + 2; } }
+    }
+    polys.forEach(p => { const m = p.match(/^\(.*\)(,\(.*\))*$/); const ringsIn = p.match(/\(.*\)/g) || []; ringsIn.forEach(r => rings.push(ringFrom(r.slice(1, -1)))); });
+  } else {
+    const body = wkt.slice(wkt.indexOf('((') + 1, wkt.lastIndexOf(')'));
+    // body = "x y, x y, ...)(x y, ...)..." split top-level rings by depth
+    let depth = 0, cur = '';
+    const ringStrs = [];
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === '(') { if (depth === 0) { cur = ''; } depth++; }
+      else if (body[i] === ')') { depth--; if (depth === 0) ringStrs.push(cur); }
+      else if (depth > 0) cur += body[i];
+    }
+    ringStrs.forEach(r => rings.push(ringFrom(r)));
+  }
+  return rings;
+}
+
+function buildMesh(rings, material, z0, z1) {
+  // ShapeGeometry with holes, positioned at watch z (three z = watch z), lying in watch xy (three x, -y).
+  const [outer, ...holes] = rings;
+  if (outer.length < 3) return null;
+  const shape = new THREE.Shape(outer.map(p => new THREE.Vector2(...MAP(p[0], p[1]))));
+  for (const h of holes) if (h.length >= 3) shape.holes.push(new THREE.Path(h.map(p => new THREE.Vector2(...MAP(p[0], p[1])))));
+  let geo;
+  try { geo = new THREE.ShapeGeometry(shape, 12); }
+  catch { // self-intersecting (e.g. the mainspring coil): triangulate each ring independently
+    geo = new THREE.BufferGeometry();
+    const pos = [], idx = [];
+    rings.forEach(ring => {
+      const flat = [], holeIdx = [];
+      ring.forEach(p => flat.push(p[0], -p[1]));
+      const tris = (typeof earcut === 'function') ? earcut(flat, holeIdx.length ? holeIdx : null) : (function(){ const t=[]; for(let i=1;i<flat.length/2-1;i++) t.push(0,i,i+1); return t; })();
+      const base = pos.length / 2;
+      ring.forEach(p => pos.push(p[0], -p[1], 0));
+      tris.forEach(t => idx.push(base + t));
+    });
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+  }
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, material);
+  m.position.z = z0;
+  return m;
+}
+
+function buildStemPiece(wkt, material, z0, z1) {
+  // stem pieces are circles in the watch (y, z) plane, extruded along watch +x (world x range = [z0, z1]).
+  const ring = parseWKT(wkt)[0];
+  if (!ring || ring.length < 3) return null;
+  const g = new THREE.CylinderGeometry(1, 1, 1, 24);
+  g.rotateZ(Math.PI / 2); // axis -> x
+  const m = new THREE.Mesh(g, material);
+  // scale to the circle: fit bounding box in (y, z)
+  let r = 0;
+  for (const [a, b] of ring) r = Math.max(r, Math.hypot(a, b));
+  m.scale.set(z1 - z0, r, r);
+  m.position.set((z0 + z1) / 2, 0, 0.6);
+  return m;
+}
+
+// ---------- boot duckdb-wasm ----------
+const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+const worker_url = await duckdb.createWorker(bundle.mainWorker);
+const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker_url);
+await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+const c = await db.connect();
+const Q = async sql => (await c.query(sql)).toArray();
+$('v-ver').textContent = (await db.getVersion()).split(' ')[0];
+try { await c.query('LOAD spatial'); $('v-ext').textContent = 'loaded'; }
+catch { await c.query('INSTALL spatial; LOAD spatial;'); $('v-ext').textContent = 'installed'; }
+
+// ---------- load snapshot ----------
+setStatus('loading 34-part snapshot (868 KB)…');
+const snap = await (await fetch('movement_snapshot.json')).json();
+setStatus('building 3D scene…');
+const isX = part => (snap.parts.find(p => p.part === part) || {}).axis === 'x';
+const partMat = {};
+for (const pc of snap.pieces) {
+  const isStem = isX(pc.part);
+  const mesh = isStem ? buildStemPiece(pc.wkt, MATS[pc.material] || MATS.steel, pc.z0, pc.z1)
+                      : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1);
+  if (!mesh) continue;
+  movement.add(mesh);
+  (partMat[pc.part] = partMat[pc.part] || []).push(mesh);
+}
+// stem: join its pieces into one movable group (they move together along x)
+{
+  const stemMeshes = partMat['Stem'] || [];
+  const stemGroup = new THREE.Group();
+  stemMeshes.forEach(m => { movement.remove(m); stemGroup.add(m); });
+  movement.add(stemGroup);
+  partMat['Stem'] = [stemGroup];
+}
+$('v-pieces').textContent = snap.pieces.length;
+
+// dial hands spin with real time (like index.html)
+function updateHands() {
+  const now = new Date();
+  const s = now.getSeconds() + now.getMilliseconds() / 1000;
+  const mi = now.getMinutes() + s / 60;
+  const hr = (now.getHours() % 12) + mi / 60;
+  // clockwise on the face == -z rotation in three (index.html convention)
+  const hands = partMat['Seconds hand']; if (hands) hands.forEach(m => m.rotation.z = -s / 60 * 2 * Math.PI);
+  const mh = partMat['Minute hand']; if (mh) mh.forEach(m => m.rotation.z = -mi / 60 * 2 * Math.PI);
+  const hh = partMat['Hour hand']; if (hh) hh.forEach(m => m.rotation.z = -hr / 12 * 2 * Math.PI);
+}
+
+// ---------- DB side: schema for the take-apart engine ----------
+await c.query('CREATE SCHEMA movement');
+await c.query(`CREATE TABLE movement.part (part VARCHAR, axis VARCHAR, arbor VARCHAR, phase DOUBLE, is_base BOOLEAN)`);
+await c.query(`CREATE TABLE movement.piece (part VARCHAR, piece VARCHAR, material VARCHAR, profile GEOMETRY, z0 DOUBLE, z1 DOUBLE)`);
+for (const p of snap.parts)
+  await c.query(`INSERT INTO movement.part VALUES ('${p.part.replace(/'/g,"''")}', '${p.axis}', NULL, 0.0, ${p.is_base})`);
+for (let i = 0; i < snap.pieces.length; i += 20)
+  await c.query(`INSERT INTO movement.piece ` + snap.pieces.slice(i, i+20).map(pc =>
+    `SELECT '${pc.part.replace(/'/g,"''")}', '${pc.piece.replace(/'/g,"''")}', '${pc.material}', ST_GeomFromText('${pc.wkt.replace(/'/g,"''")}'), ${pc.z0}, ${pc.z1}`).join(' UNION ALL '));
+await c.query(`CREATE VIEW movement.v_piece AS SELECT part, piece, z0, z1, profile AS world FROM movement.piece`);
+for (const stmt of (await (await fetch('04_take_apart.sql')).text()).replace(/\/\*[\s\S]*?\*\//g, '').split(';').map(s => s.trim()).filter(Boolean))
+  await c.query(stmt);
+setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)');
+
+// ---------- take-apart loop: every verdict is a SQL in this browser ----------
+async function computeRounds() {
+  const ways = await Q(`SELECT part, axis, is_base, s FROM movement.v_way_out`);
+  const removal = [];
+  let round = 0;
+  while (round < 15) {
+    round++;
+    const free = [];
+    for (const w of ways) {
+      if (w.is_base || removal.some(x => x.part === w.part)) continue;
+      const hit = await Q(`SELECT blocked FROM m_blocked('${w.part}', ${w.s})`);
+      if (!hit.length || !hit[0].blocked)
+        free.push({ part: w.part, round, dx: w.axis === 'x' ? w.s : 0, dy: 0, dz: w.axis === 'z' ? w.s : 0 });
+    }
+    if (!free.length) break;
+    for (const f of free) {
+      removal.push(f);
+      await c.query(`INSERT INTO movement.removal VALUES ('${f.part}', ${f.round}, ${f.dx}, 0.0, ${f.dz}, NULL)`);
+    }
+  }
+  return removal;
+}
+const removals = await computeRounds();
+const maxRound = Math.max(...removals.map(r => r.round));
+$('v-rounds').textContent = `${maxRound} (${removals.length} parts)`;
+
+// golden check
+const gold = {};
+for (const g of snap.take_apart_golden) (gold[g.round] = gold[g.round] || new Set()).add(g.part);
+let goldOk = true;
+for (let rr = 1; rr <= 8; rr++) {
+  const got = new Set(removals.filter(r => r.round === rr).map(r => r.part));
+  const want = gold[rr] || new Set();
+  if (got.size !== want.size || [...got].some(p => !want.has(p))) goldOk = false;
+}
+$('v-gold').textContent = goldOk ? 'GOLDEN MATCH ✓' : 'MISMATCH ✗';
+$('v-gold').className = 'v ' + (goldOk ? 'ok' : 'bad');
+
+// levels (last off = nearest the plate)
+const levels = {};
+{
+  const lastByDir = {};
+  for (const r of removals) {
+    const k = `${r.dx},${r.dy},${r.dz}`;
+    lastByDir[k] = Math.max(lastByDir[k] || 0, r.round);
+  }
+  for (const r of removals)
+    levels[r.part] = lastByDir[`${r.dx},${r.dy},${r.dz}`] - r.round + 1;
+}
+
+// ---------- HUD rounds ----------
+function renderRounds(liveUpTo) {
+  const el = $('rounds');
+  el.innerHTML = '';
+  for (let rr = 1; rr <= maxRound; rr++) {
+    const g = removals.filter(r => r.round === rr);
+    if (!g.length) continue;
+    const d = document.createElement('div');
+    d.className = 'r' + (liveUpTo >= rr ? ' live' : '');
+    const dir = r => r.dz > 0 ? '↑' : r.dz < 0 ? '↓' : '→';
+    d.innerHTML = `<span class="n">${rr}</span>` + g.map(r => `${r.part} <span class="out">${dir(r)}${r.dz? ' z':''}${r.dx? ' x':''}</span>`).join(' · ');
+    el.appendChild(d);
+  }
+}
+renderRounds(0);
+
+// ---------- explode animation ----------
+// target offset for part p: along its exit axis, spaced by level (later removals sit closer to the plate)
+function targetOffset(part) {
+  const r = removals.find(x => x.part === part);
+  if (!r) return new THREE.Vector3();
+  const spread = 3.2;
+  const k = (levels[part] || 1) * spread;
+  return new THREE.Vector3(r.dx * k, 0, r.dz * k);
+}
+let roundShown = 0;
+const _tgt = {};   // part -> THREE.Vector3
+function refreshTargets() {
+  const out = new Set(removals.filter(r => r.round <= roundShown).map(r => r.part));
+  for (const part of Object.keys(partMat)) _tgt[part] = out.has(part) ? targetOffset(part) : new THREE.Vector3();
+}
+async function stepOne() {
+  if (roundShown >= maxRound) return;
+  roundShown++;
+  refreshTargets();
+  setStatus(`round ${roundShown}: DB released ${removals.filter(r => r.round === roundShown).map(r => r.part).join(', ')}`);
+  renderRounds(roundShown);
+  if (roundShown >= maxRound) { $('b-take').disabled = true; $('b-step').disabled = true; setStatus('all 33 parts out — 8 rounds, golden table matched'); }
+}
+$('b-take').onclick = async () => {
+  $('b-take').disabled = true; $('b-step').disabled = true; $('b-assemble').disabled = false;
+  while (roundShown < maxRound) { await stepOne(); await sleep(900); }
+};
+$('b-step').onclick = () => stepOne();
+$('b-assemble').onclick = () => {
+  roundShown = 0; refreshTargets();
+  renderRounds(0);
+  $('b-take').disabled = false; $('b-step').disabled = false; $('b-assemble').disabled = true;
+  setStatus('assembled');
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---------- resize + render loop ----------
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * Math.min(devicePixelRatio,2) || canvas.height !== h * Math.min(devicePixelRatio,2)) {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+}
+function tick() {
+  requestAnimationFrame(tick);
+  resize();
+  const k = 1 - Math.pow(0.002, 0.016);
+  for (const [part, ms] of Object.entries(partMat)) {
+    const t = _tgt[part];
+    if (t) for (const m of ms) m.position.lerp(t, k);
+  }
+  updateHands();
+  controls.update();
+  renderer.render(scene, camera);
+}
+refreshTargets();
+$('b-take').disabled = false; $('b-step').disabled = false;
+setStatus('ready — 拖拽环视，点 Take apart 看 DB 逐轮拆卸');
+tick();
+</script>
+</body>
+</html>

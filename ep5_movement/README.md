@@ -15,6 +15,22 @@ stateful loops in the original.
 | `sql/04_take_apart.sql` | `pg/05_take_apart.sql` (geometry half) | `m_blocked(p, s)`: coaxial = 2D world overlap + z-band check; cross-axis (the stem) = the **strict** 2D reduction of `ST_3DIntersects` (swept solid = yz section × x range; a hole in the clipping polygon stays a hole because we test real polygon overlap, never envelopes) |
 | `run_native.py` | `pg/05_take_apart.sql` (loop half) + `pg/03_calibre.sql` `clear_phase`/`phase_meshes`/`phase_click` | assembles the 5 SQL files, phases the going train to max backlash, then peels: one `m_blocked` query per part per round |
 
+## The wasm page (index34.html, full movement in the browser)
+
+The DuckDB-WASM engine cannot build all 107 piece geometries live (its
+single-threaded linear memory tops out ~256 MB and the macro pipeline runs
+out in `03_calibre_b`), so the page takes a **static snapshot** of the
+assembled state — `gen_snapshot.py` runs the verified native pipeline
+(assemble → phase → golden check) and dumps `movement_snapshot.json`
+(868 KB, world WKT per piece, phases baked into the geometry). The browser
+loads the snapshot in ~150 ms and then runs the **take-apart loop entirely
+in DuckDB-WASM**: `m_blocked()` per part per round, one SQL each, parts
+explode along the DB-issued exit axis. The live loop reproduces the golden
+table in the browser (verified headless: `GOLDEN MATCH ✓`, 0 page errors).
+
+Run: `python3 gen_snapshot.py [base] [out.json]` (needs duckdb + spatial;
+aborts if the golden table regresses).
+
 ## Run
 
 ```sh

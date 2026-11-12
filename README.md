@@ -29,7 +29,9 @@ The 3D view is pure presentation — the same DuckDB collision map and one-query
 
 ## Try it
 
-[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the 3D view (Three.js: solid metal escape wheel, ruby stones, balance + hairspring; drag to orbit). The 2D engineering view is at [index2d.html](https://alitrack.github.io/watchduck/index2d.html). The whole engine is a static HTML page:
+[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the 3D view (Three.js: solid metal escape wheel, ruby stones, balance + hairspring; drag to orbit). The 2D engineering view is at [index2d.html](https://alitrack.github.io/watchduck/index2d.html).
+
+**[Ep5 full movement → index34.html](https://alitrack.github.io/watchduck/index34.html)** — the complete 34-part calibre (107 pieces: mainplate, all four bridges, going train, barrel + mainspring, keyless works, dial and hands, stem) rendered in 3D, with the **take-apart running live in DuckDB-WASM**: the disassembly loop (`m_blocked()`, one SQL per part per round) peels 8 rounds in the browser, matching the golden table of the [watchmaker-sql Ep5 reference](https://github.com/sqlartist/watchmaker-sql). Geometry is a pre-solved 868 KB snapshot (phases baked in) because the wasm engine's ~256 MB linear memory can't build 107 macro-generated pieces live — but every take-apart verdict is still a query the browser's database makes. See [`ep5_movement/`](ep5_movement/) for the SQL port + snapshot generator. The whole engine is a static HTML page:
 
 - ~40 MB DuckDB-WASM + spatial extension downloads on first load (cached after), works offline afterwards
 - **Start / Pause / Reset**, and the live counter of the emergent **deg/beat** (theory: 12.00° = half the 24° tooth pitch)
@@ -37,8 +39,12 @@ The 3D view is pure presentation — the same DuckDB collision map and one-query
 ## Repo layout
 
 ```
-index.html            the whole app (static, no build step)
-scripts/geometry.py   frozen part dimensions + the random search that found them
+index.html              the 3-part escapement app (default, static, no build step)
+index34.html            the 34-part full movement + live wasm take-apart
+movement_snapshot.json  assembled Ep5 state (world WKT per piece, phases baked in)
+04_take_apart.sql       the m_blocked take-apart engine (runs in both native + wasm)
+ep5_movement/           the native DuckDB port of the reference (SQL + drivers)
+scripts/geometry.py     frozen part dimensions + the random search that found them
 ```
 
 The geometry itself was found by random search against purely geometric acceptance criteria — lock at center swing, ~half-pitch release at extreme swing, zero dead zones. Run `python3 scripts/geometry.py` to verify the frozen geometry still passes acceptance; `--search` reruns the search.
