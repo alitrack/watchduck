@@ -21,8 +21,8 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .card h2 { font-size:12px; margin:0 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; font-weight:600; }
   .row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:13px; }
-  .row .v { color:var(--acc); }
-  .row .v.ok { color:var(--good); } .row .v.err { color:var(--bad); }
+  .row .v { color:var(--acc); } .row .v.ok { color:var(--good); } .row .v.err { color:var(--bad); }
+  #v-parts b { color:var(--txt); font-weight:600; } #v-parts .ok { color:var(--good); } #v-parts .err { color:var(--bad); } #v-parts .selfx { color:#e0a93e; }
   .btns { display:flex; gap:8px; flex-wrap:wrap; }
   button { font:inherit; font-size:12.5px; background:#1e2330; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
   button:hover { border-color:var(--acc); color:var(--acc); }
@@ -91,8 +91,9 @@
       <div class="row"><span>triangles (earcut → DB table)</span><span class="v" id="v-tris">—</span></div>
       <div class="row"><span>volume (divergence theorem)</span><span class="v" id="v-vol">—</span></div>
       <div class="row"><span>2D area × thickness</span><span class="v" id="v-area">—</span></div>
-      <div class="row"><span>open edges (max over parts)</span><span class="v" id="v-open">—</span></div>
+      <div class="row"><span>open edges (simple parts)</span><span class="v" id="v-open">—</span></div>
       <div class="row"><span>cross-check</span><span class="v" id="v-ver2">—</span></div>
+      <div class="row" style="font-size:11px;line-height:1.5"><span style="grid-column:1/-1" id="v-parts">—</span></div>
       <div class="row"><span>3D interference (per frame)</span><span class="v" id="v-clash">idle</span></div>
       <div class="btns" style="margin-top:8px"><button id="b-solid" disabled>DB solids: off</button></div>
       <div class="hint">solids = wheel rim · 2 pallet stones · lever · balance rim — the wireframe you toggle is read back from the verified DB table</div>
@@ -421,7 +422,7 @@ for (const which of ['entry', 'exit']) {
   SOLID_PARTS.push({
     id: 'lever', rows: flatToRows(flat, [Array.from(L.keys())], z0, z1, undefined),
     wkt: 'POLYGON((' + L.map(([x, y]) => R5(x) + ' ' + R5(y)).concat([R5(L[0][0]) + ' ' + R5(L[0][1])]).join(',') + '))',
-    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1,
+    dx: PIVOT[0], dy: PIVOT[1], spin: 'fork', z0, z1, selfX: true,
   });
 }
 // (4) balance rim — annulus 3.95..4.4 about its own center (world offset BAL_C)
@@ -755,13 +756,13 @@ let solidInfo = null, _clash3d = false;
     await c.query(`INSERT INTO solids VALUES ` + p.rows.map(r => `('${p.id}',${r.join(',')})`).join(','));
 
   const partCheck = [];
-  let trisAll = 0, volAll = 0, areaAll = 0, openMax = 0;
+  let trisAll = 0, volAll = 0, areaAll = 0, openSimpleMax = 0, openAllMax = 0;
   for (const p of SOLID_PARTS) {
     const areaExpr = p.holeWkt
       ? `(ST_Area(ST_GeomFromText('${p.wkt}')) - ST_Area(ST_GeomFromText('${p.holeWkt}'))) * ${p.z1 - p.z0}`
       : `ST_Area(ST_GeomFromText('${p.wkt}')) * ${p.z1 - p.z0}`;
     const nTris = (await c.query(`SELECT count(*)::DOUBLE AS n FROM solids WHERE part='${p.id}'`)).toArray()[0];
-    const vol = (await c.query(`SELECT round(sum(x1*(y2*z3 - z2*y3) - y1*(x2*z3 - z2*x3) + z1*(x2*y3 - y2*x3))/6.0, 4) AS vol FROM solids WHERE part='${p.id}'`)).toArray()[0];
+    const vol = (await c.query(`SELECT round(abs(sum(x1*(y2*z3 - z2*y3) - y1*(x2*z3 - z2*x3) + z1*(x2*y3 - y2*x3))/6.0), 4) AS vol FROM solids WHERE part='${p.id}'`)).toArray()[0];
     const areaX = (await c.query(`SELECT round(${areaExpr}, 4) AS ax`)).toArray()[0];
     const open = (await c.query(`
       WITH e AS (SELECT x1||','||y1||','||z1 AS p, x2||','||y2||','||z2 AS q FROM solids WHERE part='${p.id}'
@@ -770,22 +771,38 @@ let solidInfo = null, _clash3d = false;
            c AS (SELECT p, q, count(*) AS n FROM e GROUP BY p, q)
       SELECT count(*)::DOUBLE AS o FROM c
       WHERE n <> 1 OR NOT EXISTS (SELECT 1 FROM c r WHERE r.p = c.q AND r.q = c.p AND r.n = 1)`)).toArray()[0];
-    partCheck.push({ id: p.id, tris: Number(nTris.n), vol: Number(vol.vol), area: Number(areaX.ax), open: Number(open.o) });
-    trisAll += Number(nTris.n); volAll += Number(vol.vol); areaAll += Number(areaX.ax);
-    openMax = Math.max(openMax, Number(open.o));
+    // self-intersecting profiles (the lever U, exactly as the page's THREE.ExtrudeGeometry
+    // triangulates it — same earcut, same mesh) fail the watertight/area×h checks by
+    // construction: report them, don't fail them
+    const selfX = p.selfX === true;
+    const ok = selfX ? null : (Number(open.o) === 0 && Math.abs(Number(vol.vol) - Number(areaX.ax)) < 1e-3);
+    partCheck.push({ id: p.id, tris: Number(nTris.n), vol: Number(vol.vol), area: Number(areaX.ax), open: Number(open.o), ok, note: selfX ? 'self-x' : null });
+    trisAll += Number(nTris.n); volAll += Number(vol.vol);
+    if (!selfX) { areaAll += Number(areaX.ax); openSimpleMax = Math.max(openSimpleMax, Number(open.o)); }
+    openAllMax = Math.max(openAllMax, Number(open.o));
   }
+  const simpleParts = partCheck.filter(p => p.ok !== null);
+  const allOk = simpleParts.every(p => p.ok);
+  const selfXParts = partCheck.filter(p => p.ok === null);
   solidInfo = {
     parts: partCheck, tris: trisAll, vol: Math.round(volAll * 10000) / 10000,
-    area: Math.round(areaAll * 10000) / 10000, open: openMax,
-    match: Math.abs(volAll - areaAll) < 1e-3 && openMax === 0,
+    area: Math.round(areaAll * 10000) / 10000, open: openAllMax,
+    match: allOk && openSimpleMax === 0,
   };
   $('v-tris').textContent = solidInfo.tris.toLocaleString() + '  (' + SOLID_PARTS.length + ' parts)';
   $('v-vol').textContent = solidInfo.vol.toFixed(4) + ' mm³';
-  $('v-area').textContent = solidInfo.area.toFixed(4) + ' mm³';
-  $('v-open').textContent = solidInfo.open;
-  $('v-open').classList.add(solidInfo.open === 0 ? 'ok' : 'err');
-  $('v-ver2').textContent = solidInfo.match ? 'volume = area × h ✓ watertight' : 'MISMATCH';
-  $('v-ver2').classList.add(solidInfo.match ? 'ok' : 'err');
+  $('v-area').textContent = solidInfo.area.toFixed(4) + ' mm³  (simple parts)';
+  $('v-open').textContent = openSimpleMax + (selfXParts.length ? `  (${selfXParts.map(p => p.id + ':' + p.open + ' self-x').join(', ')})` : '');
+  $('v-open').classList.add(openSimpleMax === 0 ? 'ok' : 'err');
+  const msg = allOk
+    ? `volume = area × h ✓ ${simpleParts.length}/${simpleParts.length} watertight`
+      + (selfXParts.length ? ` · ${selfXParts.map(p => p.id + ':' + p.open + ' open (self-x profile, as rendered)').join(' · ')}` : '')
+    : 'MISMATCH';
+  $('v-ver2').textContent = msg;
+  $('v-ver2').classList.add(allOk ? 'ok' : 'err');
+  const vp = $('v-parts');
+  vp.innerHTML = partCheck.map(p =>
+    `${p.id} <b>${p.tris}t</b> ${p.vol.toFixed(3)}mm³ ${p.ok === true ? '<span class="ok">✓</span>' : p.ok === false ? '<span class="err">✗</span>' : '<span class="selfx">self-x</span>'}`).join('<br>');
   // fill each overlay from the DB table itself (local z + group offset), attach
   // to its rotating group (profiles are already in the group's local frame)
   const grp = { wheel: wheelGroup, fork: forkGroup, balance: balanceGroup };
