@@ -896,7 +896,8 @@ let solidInfo = null, _clash3d = false, takeApart = null;
                           ST_GeomFromText('${hornL}')), ST_GeomFromText('${hornR}')),
                           ST_GeomFromText('${stoneE}')), ST_GeomFromText('${stoneX}')),
         ${ZB.fork[0]}, ${ZB.fork[1]}, CASE WHEN (${ZB.fork[0]} + ${ZB.fork[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END
-      UNION ALL SELECT 'balance', ST_GeomFromText('${byId('balance_rim').wkt}'),
+      UNION ALL SELECT 'balance',
+        ST_Translate(ST_GeomFromText('${byId('balance_rim').wkt}'), ${PIVOT[0]}, ${PIVOT[1] + 4.4}),
         ${ZB.balance[0]}, ${ZB.balance[1]}, CASE WHEN (${ZB.balance[0]} + ${ZB.balance[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END`);
     await c.query(`CREATE OR REPLACE TABLE ta_removed(part VARCHAR, rnd INT, grp VARCHAR)`);
     // "b is in the way of a's exit (a.s)": 2D profiles overlap AND b lies AHEAD
@@ -970,7 +971,7 @@ function showTakeApart(on) {
   takeApart.rounds.forEach((r, i) => {
     const out = (nR - i) * 1.6 + 0.8;
     for (const p of r.parts)
-      explode.t[p.group] = Number(p.s) === 1 ? out : -out;
+      explode.t[p.part] = Number(p.s) === 1 ? out : -out;   // part name == group name (wheel/fork/balance)
   });
   $('b-take').textContent = 'Assemble';
 }
@@ -1043,7 +1044,11 @@ async function physicsStep(vSec) {
   const ph = (vSec * BEAT_HZ) % 1.0;
   const fork = A * (4 * Math.abs(ph - 0.5) - 1);
   // one statement, two verdicts: physics (blocked) + Ep5 solid-profile clash
-  const res = await c.query(`EXECUTE p_frame(${fmt(wheel % PITCH)}, ${fmt(fork)})`);
+  // quantize to the ESC_MAP grid (wheel 0.25°, fork 0.5°) — a sub-step that
+  // rounds off-grid misses the table and COALESCE would force blocked=1
+  const wq = Math.round((wheel % PITCH) * 4) / 4;
+  const fq = Math.round(fork / 0.5) * 0.5;
+  const res = await c.query(`EXECUTE p_frame(${wq.toFixed(2)}, ${fq.toFixed(1)})`);
   frames++;
   const row0 = res.toArray()[0];
   const blocked = row0 ? Number(row0.blocked) !== 0 : true;   // absent state = blocked
