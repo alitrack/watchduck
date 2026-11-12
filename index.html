@@ -41,6 +41,7 @@
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
 } }
 </script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
 </head>
 <body>
 <header>
@@ -84,6 +85,15 @@
         <button id="b-reset" disabled>Reset</button>
         <button id="b-map" disabled>Show collision map</button>
       </div>
+    </div>
+    <div class="card">
+      <h2>Solids — the wheel, built &amp; verified in DuckDB</h2>
+      <div class="row"><span>triangles (earcut → DB table)</span><span class="v" id="v-tris">—</span></div>
+      <div class="row"><span>volume (divergence theorem)</span><span class="v" id="v-vol">—</span></div>
+      <div class="row"><span>2D area × thickness</span><span class="v" id="v-area">—</span></div>
+      <div class="row"><span>open edges</span><span class="v" id="v-open">—</span></div>
+      <div class="row"><span>cross-check</span><span class="v" id="v-ver2">—</span></div>
+      <div class="btns" style="margin-top:8px"><button id="b-solid" disabled>DB solid: off</button></div>
     </div>
     <div class="card">
       <h2>The SQL doing the physics right now</h2>
@@ -313,6 +323,71 @@ for (let k = 0; k < N_TEETH; k++) {
   toothMeshes.push(t);
 }
 scene.add(wheelGroup);
+
+// ---- Ep5 solid: the wheel rim as a real 3D solid, built and verified in DuckDB ----
+// Port of watchmaker-sql Ep5 (prism → triangle table → volume() / open_edges()):
+// the wheel silhouette — base circle R with the same 15 TOOTH quads the SQL
+// collision uses — plus the inner hole (R-1.9) is earcut-triangulated, extruded
+// into the `solids` table, and verified in SQL: divergence-theorem volume must
+// equal 2D area × thickness, and the mesh must be watertight (0 open edges).
+function rayConvexExit(o, d, q) {
+  let best = null;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], ex = b[0]-a[0], ey = b[1]-a[1];
+    const den = d[0]*ey - d[1]*ex; if (Math.abs(den) < 1e-12) continue;
+    const t = ((a[0]-o[0])*ey - (a[1]-o[1])*ex) / den;
+    if (t <= 1e-9) continue;
+    const u = ex !== 0 ? (t*d[0] - (a[0]-o[0])) / ex : (t*d[1] - (a[1]-o[1])) / ey;
+    if (u >= 0 && u <= 1 && (best === null || t > best)) best = t;
+  }
+  return best;
+}
+const SOLID = (() => {
+  const nS = 360, nH = 120, Ri = R - 1.9, z0 = 0.0, z1 = EX.depth;
+  // outer silhouette: max ray exit over R + the 15 tooth quads (star-shaped)
+  const flat = [];
+  for (let i = 0; i < nS; i++) {
+    const th = i / nS * 2 * Math.PI, d = [Math.cos(th), Math.sin(th)];
+    let r = R;
+    for (let k = 0; k < N_TEETH; k++) {
+      const a = rad(k * PITCH), ca = Math.cos(a), sa = Math.sin(a);
+      const q = TOOTH.map(([x, y]) => { const lx = -y, ly = R + x; return [lx*ca - ly*sa, lx*sa + ly*ca]; });
+      const t = rayConvexExit([0, 0], d, q);
+      if (t !== null && t > r) r = t;
+    }
+    flat.push(r * Math.cos(th), r * Math.sin(th));
+  }
+  const holeStart = nS;
+  for (let i = 0; i < nH; i++) {
+    const th = (1 - i / nH) * 2 * Math.PI;   // CW (opposite outer CCW) → hole
+    flat.push(Ri * Math.cos(th), Ri * Math.sin(th));
+  }
+  const outerBnd = Array.from({ length: nS }, (_, i) => i);
+  const holeBnd = Array.from({ length: nH }, (_, i) => holeStart + i);
+  const R5 = v => Math.round(v * 1e5) / 1e5;
+  const ringWKT = idx => { const p = idx.map(i => R5(flat[i*2]) + ' ' + R5(flat[i*2+1])); p.push(p[0]); return 'POLYGON((' + p.join(',') + '))'; };
+  const lidIdx = earcut(flat, [holeStart]);
+  const P = i => [flat[i*2], flat[i*2+1]];
+  const rows = [];
+  for (let i = 0; i < lidIdx.length; i += 3) {                 // top + bottom lids
+    const a = P(lidIdx[i]), b = P(lidIdx[i+1]), c = P(lidIdx[i+2]);
+    rows.push([a[0],a[1],z1, b[0],b[1],z1, c[0],c[1],z1]);
+    rows.push([a[0],a[1],z0, c[0],c[1],z0, b[0],b[1],z0]);
+  }
+  for (const bnd of [outerBnd, holeBnd])                        // walls
+    for (let i = 0; i < bnd.length; i++) {
+      const a = P(bnd[i]), b = P(bnd[(i+1) % bnd.length]);
+      rows.push([a[0],a[1],z0, b[0],b[1],z0, b[0],b[1],z1]);
+      rows.push([a[0],a[1],z0, b[0],b[1],z1, a[0],a[1],z1]);
+    }
+  return { rows: rows.map(r => r.map(R5)), wktOuter: ringWKT(outerBnd), wktHole: ringWKT(holeBnd), z0, z1 };
+})();
+// X-ray overlay — rendered from the triangle table DuckDB stores (filled at boot)
+const solidOverlay = new THREE.Mesh(
+  new THREE.BufferGeometry(),
+  new THREE.MeshBasicMaterial({ color: 0x4fc3f7, wireframe: true, transparent: true, opacity: 0.5, depthTest: false }));
+solidOverlay.visible = false;
+wheelGroup.add(solidOverlay);
 
 // ---- rounded-rect helper (stones / lever) ----
 function roundedRectShape(w, h, r) {
@@ -606,6 +681,52 @@ await c.query(`PREPARE p_lookup AS
   SELECT blocked::DOUBLE AS blocked FROM esc_map
   WHERE wheel_deg = $1 AND fork_deg = $2`);
 $('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number(mapInfo.b).toLocaleString()} blocked) / ${mapMs} ms`;
+
+// ---------- Ep5 solids: build the wheel in the DB, verify it in the DB ----------
+// triangle table from the earcut mesh → SQL computes volume (divergence theorem),
+// 2D area×thickness cross-check, and watertightness (open edges). The wireframe
+// overlay is then filled from THIS TABLE — what you see is what the DB verified.
+let solidInfo = null;
+{
+  const vals = SOLID.rows.map(r => `(${r.join(',')})`).join(',');
+  await c.query(`CREATE OR REPLACE TABLE solids(
+    x1 DOUBLE,y1 DOUBLE,z1 DOUBLE, x2 DOUBLE,y2 DOUBLE,z2 DOUBLE, x3 DOUBLE,y3 DOUBLE,z3 DOUBLE)`);
+  await c.query(`INSERT INTO solids VALUES ${vals}`);
+  const nTris = (await c.query(`SELECT count(*)::DOUBLE AS n FROM solids`)).toArray()[0];
+  const vol = (await c.query(`SELECT round(sum(x1*(y2*z3 - z2*y3) - y1*(x2*z3 - z2*x3) + z1*(x2*y3 - y2*x3))/6.0, 4) AS vol FROM solids`)).toArray()[0];
+  const areaX = (await c.query(`SELECT round((ST_Area(ST_GeomFromText('${SOLID.wktOuter}')) - ST_Area(ST_GeomFromText('${SOLID.wktHole}'))) * ${SOLID.z1 - SOLID.z0}, 4) AS ax`)).toArray()[0];
+  const open = (await c.query(`
+    WITH e AS (SELECT x1||','||y1||','||z1 AS p, x2||','||y2||','||z2 AS q FROM solids
+               UNION ALL SELECT x2||','||y2||','||z2, x3||','||y3||','||z3 FROM solids
+               UNION ALL SELECT x3||','||y3||','||z3, x1||','||y1||','||z1 FROM solids),
+         c AS (SELECT p, q, count(*) AS n FROM e GROUP BY p, q)
+    SELECT count(*)::DOUBLE AS o FROM c
+    WHERE n <> 1 OR NOT EXISTS (SELECT 1 FROM c r WHERE r.p = c.q AND r.q = c.p AND r.n = 1)`)).toArray()[0];
+  solidInfo = {
+    tris: Number(nTris.n), vol: Number(vol.vol), area: Number(areaX.ax), open: Number(open.o),
+    match: Math.abs(Number(vol.vol) - Number(areaX.ax)) < 1e-3 && Number(open.o) === 0,
+  };
+  $('v-tris').textContent = solidInfo.tris.toLocaleString();
+  $('v-vol').textContent = solidInfo.vol.toFixed(4) + ' mm³';
+  $('v-area').textContent = solidInfo.area.toFixed(4) + ' mm³';
+  $('v-open').textContent = solidInfo.open;
+  $('v-open').classList.add(solidInfo.open === 0 ? 'ok' : 'err');
+  $('v-ver2').textContent = solidInfo.match ? 'volume = area × h ✓ watertight' : 'MISMATCH';
+  $('v-ver2').classList.add(solidInfo.match ? 'ok' : 'err');
+  // fill the overlay from the DB table itself
+  const geo = solidOverlay.geometry;
+  const pos = new Float32Array(solidInfo.tris * 9);
+  const rows = (await c.query(`SELECT x1,y1,z1,x2,y2,z2,x3,y3,z3 FROM solids`)).toArray();
+  rows.forEach((r, i) => {
+    for (let j = 0; j < 9; j++) pos[i*9 + j] = Number(r[j]);
+  });
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.computeBoundingSphere();
+}
+$('b-solid').onclick = () => {
+  solidOverlay.visible = !solidOverlay.visible;
+  $('b-solid').textContent = solidOverlay.visible ? 'DB solid: on' : 'DB solid: off';
+};
 setSQL(`-- map built once (${Number(mapInfo.n).toLocaleString()} ST_Intersects pairs):
 CREATE TABLE esc_map AS
 SELECT wi*0.25 AS wheel_deg, fi*0.5-12 AS fork_deg,
@@ -614,7 +735,13 @@ FROM wheel_angles CROSS JOIN fork_angles;
 
 -- then EVERY FRAME is this single query:
 SELECT blocked FROM esc_map
-WHERE wheel_deg = ${'<current>'} AND fork_deg = ${'<current>'};`);
+WHERE wheel_deg = ${'<current>'} AND fork_deg = ${'<current>'};
+
+-- Ep5 solid: same wheel, built & verified in DuckDB
+CREATE TABLE solids AS <earcut triangle table>;  -- ${solidInfo?.tris ?? '?'} tris
+SELECT volume(via divergence theorem)  → ${solidInfo?.vol ?? '?'} mm³
+SELECT ST_Area(profile) × thickness    → ${solidInfo?.area ?? '?'} mm³  (must match)
+SELECT open_edges                       → ${solidInfo?.open ?? '?'} (0 = watertight)`);
 
 // ---------- runtime: every frame, one SQL lookup ----------
 const fmt = v => (Math.round(v * 4) / 4).toFixed(2);
@@ -632,6 +759,8 @@ window.__wd3d = () => ({
   flashLevel: (typeof flashLevel !== 'undefined') ? flashLevel : null,
   mapRows: (typeof mapData !== 'undefined' && mapData) ? mapData.length : null,
   stoneHot: (typeof stoneMeshes !== 'undefined' && stoneMeshes.length) ? (stoneMeshes[0].material === RUBY_HOT) : null,
+  solid: (typeof solidInfo !== 'undefined') ? solidInfo : null,
+  solidVisible: (typeof solidOverlay !== 'undefined' && solidOverlay) ? solidOverlay.visible : null,
 });
 
 // ---------- tick sound (tiny WebAudio click, unlocked by the Start click) ----------
@@ -712,7 +841,7 @@ function spin() {
 }
 spin();
 
-$('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false;
+$('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false; $('b-solid').disabled = false;
 $('b-run').onclick = () => {
   if (!actx) { try { actx = new AudioContext(); } catch (e) {} }
   running = !running;
