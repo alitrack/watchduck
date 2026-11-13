@@ -8,7 +8,13 @@
 
 ## 在线体验
 
-[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（3D 视图，Three.js：立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，可拖拽旋转）；2D 工程视图在 [index2d.html](https://alitrack.github.io/watchduck/index2d.html)；**Ep5 全机芯（34 零件 / 107 件）在 [index34.html](https://alitrack.github.io/watchduck/index34.html)——拆卸循环 `m_blocked()` 直接在浏览器 DuckDB-WASM 里逐轮跑 SQL，8 轮黄金表浏览器内复现**。几何是 868KB 预求解快照（wasm 单线程线性内存 ~256MB 装不下 107 件的现场宏生成，OOM 实测），相位烘焙在几何里，但每条拆卸判决仍是浏览器里的一条 SQL。整个引擎就是一个静态 HTML 页面，首次加载会下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
+[**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（导航首页，三选一）：
+
+- **[index34.html — Ep5 全机芯（34 零件 / 107 件）](https://alitrack.github.io/watchduck/index34.html)**——完整机芯 3D，拆卸循环 `m_blocked()` 直接在浏览器 DuckDB-WASM 里逐轮跑 SQL，8 轮黄金表浏览器内复现。几何是 868KB 预求解快照（wasm 单线程线性内存 ~256MB 装不下 107 件现场宏生成，OOM 实测），相位烘焙在几何里，但每条拆卸判决仍是浏览器里的一条 SQL。
+- **[escapement3d.html — 3 零件擒纵组 · 3D](https://alitrack.github.io/watchduck/escapement3d.html)**——立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，实时走针，可拖拽旋转；~7.9 万次 `ST_Intersects` 现场建碰撞表，递归 SQL 逐 tick 求解。
+- **[index2d.html — 2D 工程视图](https://alitrack.github.io/watchduck/index2d.html)**——同一引擎，正交轮廓，碰撞态在图上标红。
+
+每个页面都是自包含静态 HTML（无构建、无后端），首次加载下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
 
 
 ## 你会看到什么
@@ -35,7 +41,14 @@ SELECT ST_Intersects(
 ## 仓库结构
 
 ```
-index.html            整个应用（纯静态，无构建步骤）
+index.html            导航首页（三张卡片，无引擎，秒开）
+escapement3d.html     3 零件擒纵组 3D 视图（纯静态，无构建步骤）
+index2d.html          3 零件擒纵组 2D 工程视图
+index34.html          Ep5 34 零件全机芯 + 浏览器内 wasm 实时拆卸
+movement_snapshot.json  Ep5 装配态快照（每件 world WKT，相位烘焙）
+04_take_apart.sql     m_blocked 拆卸引擎（native + wasm 通用）
+earcut.min.js         本地化的 earcut（index34 用它三角化 WKT 轮廓）
+ep5_movement/         参考实现的 native DuckDB 移植（SQL + driver）
 scripts/geometry.py   冻结的零件尺寸 + 找到这些尺寸的随机搜索
 ```
 

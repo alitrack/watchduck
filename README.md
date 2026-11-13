@@ -29,9 +29,13 @@ The 3D view is pure presentation — the same DuckDB collision map and one-query
 
 ## Try it
 
-[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the 3D view (Three.js: solid metal escape wheel, ruby stones, balance + hairspring; drag to orbit). The 2D engineering view is at [index2d.html](https://alitrack.github.io/watchduck/index2d.html).
+[**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the hub page. Three demos, one engine:
 
-**[Ep5 full movement → index34.html](https://alitrack.github.io/watchduck/index34.html)** — the complete 34-part calibre (107 pieces: mainplate, all four bridges, going train, barrel + mainspring, keyless works, dial and hands, stem) rendered in 3D, with the **take-apart running live in DuckDB-WASM**: the disassembly loop (`m_blocked()`, one SQL per part per round) peels 8 rounds in the browser, matching the golden table of the [watchmaker-sql Ep5 reference](https://github.com/sqlartist/watchmaker-sql). Geometry is a pre-solved 868 KB snapshot (phases baked in) because the wasm engine's ~256 MB linear memory can't build 107 macro-generated pieces live — but every take-apart verdict is still a query the browser's database makes. See [`ep5_movement/`](ep5_movement/) for the SQL port + snapshot generator. The whole engine is a static HTML page:
+- **[index34.html — Ep5 full movement (34 parts / 107 pieces)](https://alitrack.github.io/watchduck/index34.html)** — the complete calibre in 3D, with the **take-apart running live in DuckDB-WASM**: the disassembly loop (`m_blocked()`, one SQL per part per round) peels 8 rounds in the browser, matching the golden table of the [watchmaker-sql Ep5 reference](https://github.com/sqlartist/watchmaker-sql). Geometry is a pre-solved 868 KB snapshot (phases baked in) because the wasm engine's ~256 MB linear memory can't build 107 macro-generated pieces live — but every take-apart verdict is still a query the browser's database makes. See [`ep5_movement/`](ep5_movement/) for the SQL port + snapshot generator.
+- **[escapement3d.html — 3-part escapement, 3D](https://alitrack.github.io/watchduck/escapement3d.html)** — Three.js rendering, solid metal escape wheel + ruby stones + balance, real-time ticking; ~79k `ST_Intersects` build the collision map live, a recursive SQL solver walks it tick by tick.
+- **[index2d.html — 2D engineering view](https://alitrack.github.io/watchduck/index2d.html)** — same engine, orthographic outlines, collision states marked on the drawing.
+
+Each page is a self-contained static HTML (no build, no backend):
 
 - ~40 MB DuckDB-WASM + spatial extension downloads on first load (cached after), works offline afterwards
 - **Start / Pause / Reset**, and the live counter of the emergent **deg/beat** (theory: 12.00° = half the 24° tooth pitch)
@@ -39,10 +43,13 @@ The 3D view is pure presentation — the same DuckDB collision map and one-query
 ## Repo layout
 
 ```
-index.html              the 3-part escapement app (default, static, no build step)
+index.html              hub page — links the three demos (no engine, instant load)
+escapement3d.html       the 3-part escapement app, 3D (static, no build step)
+index2d.html            the 3-part escapement, 2D engineering view
 index34.html            the 34-part full movement + live wasm take-apart
 movement_snapshot.json  assembled Ep5 state (world WKT per piece, phases baked in)
 04_take_apart.sql       the m_blocked take-apart engine (runs in both native + wasm)
+earcut.min.js           vendored earcut (index34 triangulates WKT profiles with it)
 ep5_movement/           the native DuckDB port of the reference (SQL + drivers)
 scripts/geometry.py     frozen part dimensions + the random search that found them
 ```
