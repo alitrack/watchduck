@@ -988,7 +988,13 @@ function failBoot(stage, err) {
 // and execution share one source of truth. entry/exit are the two ST_Intersects terms
 // of the clash check, exposed separately so highlights and the trace can say WHICH
 // stone from the same statement (no second, different test).
-const P_FRAME_BODY = `SELECT blocked, entry, exit, (entry > 0 OR exit > 0)::DOUBLE AS clash3d
+// P1-2: built from a function because the entry stone's WKT inside the statement
+// changes with the experiment parameter. After every rebuild the body is
+// regenerated and the statement is PREPAREd again — this duckdb-wasm build
+// (1.33.1-dev57.0, engine v1.5.4) replaces a prepared statement by name, which
+// was verified against the live engine before wiring this in.
+function buildPFrameBody() {
+  return `SELECT blocked, entry, exit, (entry > 0 OR exit > 0)::DOUBLE AS clash3d
 FROM (
   SELECT COALESCE((SELECT blocked FROM esc_map WHERE wheel_deg = $1 AND fork_deg = $2), 1) AS blocked,
          ST_Intersects(ST_Rotate(e.wheel_g, $1 * PI() / 180.0),
@@ -999,33 +1005,48 @@ FROM (
                ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_entry').clashWkt}') AS entry_g,
                ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_exit').clashWkt}') AS exit_g) e
 )`;
-const P_FRAME_SQL = 'PREPARE p_frame AS\n' + P_FRAME_BODY;
-setStage('idle', 'engine not started');
-const boot = async () => {
-  setStage('downloading', 'fetching the duckdb-wasm bundle from the CDN');
-  const duckdb = await import(DUCKDB_ESM_URL);
-  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
-  const worker_url = await duckdb.createWorker(bundle.mainWorker);
-  const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker_url);
-  setStage('instantiating', 'compiling the WASM module (large on first load, cached after)');
-  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-  c = await db.connect();
-  window.__wd = { get c() { return c; } };
-  $('v-ver').textContent = (await db.getVersion()).split(' ')[0];
-  setStage('loading_spatial', 'LOAD spatial');
-  try { await c.query('LOAD spatial'); $('v-ext').textContent = 'loaded'; }
-  catch (e) {
-    setStage('loading_spatial', 'spatial not preloaded — INSTALL from CDN, then LOAD');
-    await c.query('INSTALL spatial; LOAD spatial;');
-    $('v-ext').textContent = 'installed';
-  }
+}
+let P_FRAME_BODY = buildPFrameBody();
+let P_FRAME_SQL = 'PREPARE p_frame AS\n' + P_FRAME_BODY;
 
-  setStage('building_map', 'building esc_map (97 x 49 wheel x fork grid, 2 ST_Intersects per state)');
-// ---------- build the collision map IN SQL ----------
-const t0 = performance.now();
-const tooth = toothWKT();
-const sEntry = stoneWKTaboutPivot('entry'), sExit = stoneWKTaboutPivot('exit');
-await c.query(`
+// ============================================================================
+// P1-2: Break the Watch — the rebuild pipeline
+// ============================================================================
+// One experimental parameter (entryOff, mm) drives everything. A request
+// (slider commit / Baseline / Experiment / Reset) does, in order:
+//   pause the simulation → runId = ++runId (race guard: a later request
+//   supersedes earlier ones) → updateEntryStone (3D meshes + SOLID_PARTS,
+//   the same numbers SQL uses) → re-insert the entry-stone rows into the
+//   `solids` table and refill its wireframe overlay FROM that table →
+//   CREATE OR REPLACE esc_map → PREPARE p_frame again (this duckdb-wasm build
+//   replaces a prepared statement by name) → refresh the take-apart fork
+//   profile (it contains the stone) → reset motion/trace → resume.
+// A serial promise chain means two rebuilds never interleave; the runId check
+// after every step boundary makes a superseded rebuild stop touching state.
+let rebuilding = false;
+let rebuildChain = Promise.resolve();
+let entryOffLastGood = 0;      // last offset that rebuilt cleanly (recovery target)
+let duckVer = '';              // duckdb engine version, captured at boot
+let stallRun = 0;              // P1-3: consecutive substeps without wheel advance
+const N_STALL = 40;            // P1-3: "stalled" threshold (documented in the card UI)
+let expCap = { baseline: null, modified: null };   // P1-3: saved real evidence
+let lastProbe = null;          // P1-3: result of the last beat probe
+
+const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(2) + ' mm';
+const fmtMap = m => `${Number(m.n).toLocaleString()} states (${Number(m.blocked).toLocaleString()} blocked) / ${m.ms} ms` +
+  (Number(m.off) !== 0 ? ` · off ${fmtOff(m.off)}` : '');
+
+// P1-2: the single esc_map builder — boot (off = 0) and every rebuild call the
+// same function, so the SQL is byte-identical between baseline and experiment.
+// Returns the real query evidence used by the status line and the compare view:
+// state count, blocked count, the lock fraction at fork = 0 (the M0 acceptance
+// criterion), dead wheel-phase columns (no reachable fork angle frees the wheel)
+// and the full per-cell verdict snapshot.
+async function buildEscMap(off) {
+  const t0 = performance.now();
+  const tooth = toothWKT();
+  const sEntry = stoneWKTaboutPivot('entry', off), sExit = stoneWKTaboutPivot('exit');
+  await c.query(`
   CREATE OR REPLACE TABLE esc_map AS
   WITH w AS (SELECT unnest(generate_series(0, ${Math.round(W_MAX/W_STEP)})) AS wi),
        f AS (SELECT unnest(generate_series(0, ${Math.round(2*F_MAX/F_STEP)})) AS fi),
@@ -1048,13 +1069,369 @@ await c.query(`
                          ST_Translate(ST_Rotate(e.exit_stone, g.fork_deg * PI() / 180.0), ${sExit.off[0]}, ${sExit.off[1]}))
          )::INTEGER AS blocked
   FROM grid g CROSS JOIN geoms e`);
-const mapInfo = (await c.query(`SELECT count(*)::DOUBLE n, sum(blocked)::DOUBLE b FROM esc_map`)).toArray()[0];
-const mapMs = Math.round(performance.now() - t0);
+  const info = (await c.query(`SELECT count(*)::DOUBLE AS n, sum(blocked)::DOUBLE AS b FROM esc_map`)).toArray()[0];
+  const lock0row = (await c.query(`SELECT COALESCE((SELECT sum(CASE WHEN blocked = 1 THEN 1 ELSE 0 END)::DOUBLE / count(*) FROM esc_map WHERE fork_deg = 0), 0) AS l`)).toArray()[0];
+  const deadrow = (await c.query(`SELECT count(*)::DOUBLE AS d FROM (SELECT DISTINCT wheel_deg FROM esc_map) d
+    WHERE NOT EXISTS (SELECT 1 FROM esc_map f WHERE f.wheel_deg = d.wheel_deg AND f.blocked = 0 AND f.fork_deg BETWEEN -10 AND 10)`)).toArray()[0];
+  const rows = (await c.query(`SELECT wheel_deg, fork_deg, blocked FROM esc_map ORDER BY 1, 2`)).toArray();
+  const map = new Map();
+  for (const r of rows) map.set(Number(r.wheel_deg) + '|' + Number(r.fork_deg), Number(r.blocked));
+  return { off, n: Number(info.n), blocked: Number(info.b), free: Number(info.n) - Number(info.b),
+           lock0: Number(lock0row.l), deadCols: Number(deadrow.d), map,
+           ms: Math.round(performance.now() - t0) };
+}
+
+// P1-2: re-derive EVERY representation of the entry stone from entryOff — the
+// physics rectangle in SOLID_PARTS (the p_frame WKT comes from it), the 3D ruby
+// mesh, the gold chaton and the anchor arm. One number in, everything (SQL and
+// pixels) out, so the picture and the verdicts can never disagree.
+function updateEntryStone(off) {
+  const p = SOLID_PARTS.find(q => q.id === 'stone_entry');
+  const [lx, ly] = entryCenter(off);
+  const hw = SW / 2, hl = SL / 2;
+  const c8 = [lx + hw, ly + hl, lx - hw, ly + hl, lx - hw, ly - hl, lx + hw, ly - hl];
+  const pstr = [0, 1, 2, 3, 0].map(i => R5(c8[2*i]) + ' ' + R5(c8[2*i + 1]));
+  p.wkt = 'POLYGON((' + pstr.join(',') + '))';
+  p.clashWkt = p.wkt;
+  p.rows = flatToRows(c8, [[0, 1, 2, 3]], p.z0, p.z1, undefined);
+  const refs = window.__wdForkRefs;
+  if (refs) {
+    const baseLen = Math.hypot(ENTRY[0], ENTRY[1]);
+    const len = Math.hypot(lx, ly);
+    refs.entryArm.scale.x = len / baseLen;           // the box's local x is its long axis
+    refs.entryArm.position.set(lx / 2, ly / 2, 0);
+    refs.entryArm.rotation.z = Math.atan2(ly, lx);
+    refs.entryChaton.position.set(lx, ly, -0.12);
+  }
+  stoneMeshes[0].position.set(lx, ly, 0.08);
+}
+
+// P1-2: refill the entry stone's wireframe overlay from the `solids` table —
+// the same rows DuckDB now holds, so the displayed mesh is the stored geometry
+// (no second copy drifting in JS).
+async function refreshEntryOverlay() {
+  const p = SOLID_PARTS.find(q => q.id === 'stone_entry');
+  const cols = ['x1','y1','z1','x2','y2','z2','x3','y3','z3'];
+  const rows = (await c.query(`SELECT x1,y1,z1,x2,y2,z2,x3,y3,z3 FROM solids WHERE part='stone_entry'`)).toArray();
+  const pos = new Float32Array(rows.length * 9);
+  rows.forEach((r, i) => { for (let j = 0; j < 9; j++) pos[i*9 + j] = Number(r[cols[j]]); });
+  p.overlay.geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  p.overlay.geometry.computeBoundingSphere();
+}
+
+// P1-2: full motion + trace reset. Used by the Reset button, after every
+// rebuild and after every evidence probe, so the watch always resumes clean.
+// (P0 note: the old Reset handler did not stop a running simulation; now it does.)
+function resetMotion() {
+  running = false;
+  $('b-run').textContent = 'Start';
+  wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;
+  _lastBeatWheel = 0; _dpbHist = [];
+  stallRun = 0;
+  $('v-beats').textContent = '0'; $('v-adv').textContent = '0.0°';
+  $('v-dpb').textContent = '—'; $('v-rate').textContent = '—'; $('v-q').textContent = '—';
+  $('v-wall').textContent = '—';
+  { const vc = $('v-clash'); vc.textContent = 'idle'; vc.classList.remove('ok', 'err'); }
+  _clash3d = false;
+  lastTrace = null; lastTraceDraw = 0;
+  drawTrace();
+  $('b-copy-sql').disabled = true;
+  render3D(0, false);
+}
+
+// P1-3: deterministic evidence probe — from a fresh state run real p_frame
+// queries until exactly nBeats beats of virtual time have elapsed (hard-capped
+// at nBeats × (BEAT_HZ / 8 ms) substeps), recording the wheel displacement per
+// beat. If the geometry has broken the escapement the wheel stops advancing
+// and the fixed budget finishes with stallRun grown — that counter (never a
+// fabricated label) gates the "Stalled by SQL solver" state.
+async function runBeatProbe(nBeats) {
+  const samples = [];
+  let prev = 0, done = 0, maxRun = 0, last = null;
+  const maxSubs = nBeats * (BEAT_HZ / 0.008);   // 40 beats = 1000 substeps
+  for (let i = 0; i < maxSubs && done < nBeats; i++) {
+    last = await physicsStep(vClock);
+    vClock += 0.008;
+    if (stallRun > maxRun) maxRun = stallRun;
+    const nb = Math.floor(vClock * BEAT_HZ);
+    if (nb > done) {
+      samples.push({ beat: nb, disp: Math.round((wheel - prev) * 1000) / 1000 });
+      prev = wheel; done = nb;
+    }
+  }
+  if (last) { updateHud(vClock); render3D(last.fork, last.blocked, last.entry, last.exit); }
+  const pr = { beats: done, samples, maxStallRun: maxRun,
+               stalled: stallRun >= N_STALL, finalWheel: Math.round(wheel * 100) / 100 };
+  lastProbe = pr;
+  return pr;
+}
+
+// P1-2: enable/disable the experiment + watch controls as a unit. Baseline and
+// Reset stay clickable while a rebuild is in flight (a later request supersedes
+// a running one); the slider, Experiment and the watch controls pause.
+function setExpBusy(busy) {
+  rebuilding = busy;
+  const ready = window.__wdBootState === 'ready';
+  $('exp-slider').disabled = !ready || busy;
+  $('exp-experiment').disabled = !ready || busy;
+  $('exp-baseline').disabled = !ready;
+  $('exp-reset').disabled = !ready;
+  for (const id of ['b-run', 'b-step', 'b-reset', 'b-map']) $(id).disabled = !ready || busy;
+}
+
+// P1-2: the public entry point — one request per call. The runId increment is
+// the "later overwrites earlier" marker; the serial chain guarantees that only
+// one rebuild touches the database at a time.
+function requestRebuild(off, { probe = false, capture = null, silent = false } = {}) {
+  if (!c || window.__wdBootState !== 'ready') return;
+  runId = (runId || 0) + 1;                 // this request is now the newest
+  const my = runId;
+  running = false;                          // pause first (P1-2)
+  $('b-run').textContent = 'Start';
+  setExpBusy(true);
+  if (!silent) $('exp-status').textContent = `rebuilding at ${fmtOff(off)} — WKT → esc_map → p_frame → reset…`;
+  rebuildChain = rebuildChain.then(() => doRebuild(off, my, { probe, capture, silent }));
+}
+
+// P1-2: the ordered rebuild steps. Every await is followed by a runId check:
+// if a newer request came in while this one was in flight, the rest of this
+// rebuild is discarded and the newer request (queued behind it on the chain)
+// takes over — the database and the UI always end up at the newest request.
+async function rebuildSequence(off, opts) {
+  const fresh = () => opts.my === runId;
+  entryOff = off;
+  updateEntryStone(off);                              // meshes + SOLID_PARTS (JS side)
+  await c.query(`DELETE FROM solids WHERE part = 'stone_entry'`);
+  if (!fresh()) return;
+  const stone = SOLID_PARTS.find(p => p.id === 'stone_entry');
+  await c.query(`INSERT INTO solids VALUES ` + stone.rows.map(r => `('stone_entry',${r.join(',')})`).join(','));
+  if (!fresh()) return;
+  await refreshEntryOverlay();
+  const mapRes = await buildEscMap(off);              // CREATE OR REPLACE esc_map
+  if (!fresh()) return;
+  P_FRAME_BODY = buildPFrameBody();                   // the new entry-stone WKT
+  P_FRAME_SQL = 'PREPARE p_frame AS\n' + P_FRAME_BODY;
+  await c.query(P_FRAME_SQL);                         // re-PREPARE (replaces by name)
+  if (!fresh()) return;
+  await runTakeApart();                               // the fork profile contains the stone
+  if (!fresh()) return;
+  resetMotion();                                      // fresh angles against the new map
+  mapData = null;                                     // heatmap re-fetches on demand
+  $('v-map').textContent = fmtMap(mapRes);
+  setSQL(sqlViewText(mapRes));
+  if (opts.probe) {
+    $('exp-status').textContent = `rebuilt at ${fmtOff(off)} — running the 40-beat probe…`;
+    await runBeatProbe(40);
+    if (!fresh()) return;
+    resetMotion();
+  }
+  entryOffLastGood = off;                             // all steps succeeded
+  $('exp-slider').value = String(off);
+  $('exp-val').textContent = fmtOff(off);
+  return mapRes;
+}
+
+async function doRebuild(off, my, opts = {}) {
+  let failed = null, mapRes = null;
+  if (my === runId) {
+    try { mapRes = await rebuildSequence(off, { ...opts, my }); }
+    catch (e) { failed = e; console.error('[watchduck] rebuild failed at', fmtOff(off), e); }
+  }
+  if (failed) {
+    if (my === runId) {
+      // Converge back to the last GOOD geometry so render and SQL stay in sync;
+      // Reset (always available) then returns to the 0.00 mm baseline.
+      if (entryOffLastGood !== off) {
+        try {
+          mapRes = await rebuildSequence(entryOffLastGood, { probe: false, silent: true, my });
+          $('exp-status').textContent = `rebuild at ${fmtOff(off)} failed (${String(failed && failed.message || failed).slice(0, 80)}) — recovered to ${fmtOff(entryOffLastGood)}; Reset returns to baseline`;
+        } catch (e2) {
+          $('exp-status').textContent = 'recovery also failed — press Reset to return to the 0.00 mm baseline';
+        }
+      } else {
+        $('exp-status').textContent = `rebuild failed (${String(failed && failed.message || failed).slice(0, 100)}) — press Reset to return to baseline`;
+      }
+    }
+  } else if (my === runId && !opts.silent) {
+    $('exp-status').textContent = `ready at ${fmtOff(off)} — ${Number(mapRes.n).toLocaleString()} states, ${mapRes.blocked.toLocaleString()} blocked` +
+      (opts.probe ? ' · 40-beat probe done' : '');
+  }
+  if (my === runId) {
+    setExpBusy(false);
+    setStatus('ready — every frame is one SQL query');
+  }
+}
+
+// P1-2: the "SQL doing the physics" panel, regenerated after each rebuild so it
+// always shows the statement actually in force (including the current offset).
+function sqlViewText(mapRes) {
+  return `-- map built at entry-stone offset ${fmtOff(entryOff)} (${Number(mapRes.n).toLocaleString()} states, ${Number(mapRes.blocked).toLocaleString()} blocked, ${mapRes.ms} ms; 2 ST_Intersects per state):
+CREATE TABLE esc_map AS
+SELECT wi*0.25 AS wheel_deg, fi*0.5-12 AS fork_deg,
+       ST_Intersects(ST_Rotate(tooth,…), ST_Translate(ST_Rotate(stone,…))) AS blocked
+FROM wheel_angles CROSS JOIN fork_angles;
+
+-- Ep5 solids: ${SOLID_PARTS.length} parts, ${solidInfo ? solidInfo.tris.toLocaleString() : '—'} tris, built & verified in DuckDB
+CREATE TABLE solids(part, x1..z3);  -- earcut triangle tables
+-- per part:  volume(divergence) = ST_Area(profile) × thickness
+--            open_edges = 0      → ${solidInfo ? (solidInfo.match ? 'ALL PASS' : 'CHECK HUD') : '—'}
+
+-- then EVERY FRAME is this single prepared statement (physics + which stone + 3D solid clash):
+${P_FRAME_SQL}
+-- blocked: grid lookup (COALESCE → a grid miss stays blocked)
+-- entry/exit/clash3d: live ST_Intersects on the same WKT the map was built from`;
+}
+
+// P1-2/P1-3: the slider and the three buttons. 'change' (commit) — not 'input'
+// (live drag) — triggers a rebuild, per the task spec.
+$('exp-slider').addEventListener('input', () => { $('exp-val').textContent = fmtOff(parseFloat($('exp-slider').value)); });
+$('exp-slider').addEventListener('change', () => {
+  if (rebuilding) return;
+  const v = parseFloat($('exp-slider').value);
+  if (v === entryOff) return;
+  requestRebuild(v);                       // live adjustment: no probe, no capture
+});
+$('exp-baseline').onclick = () => requestRebuild(0, { probe: true, capture: 'baseline' });
+$('exp-experiment').onclick = () => {
+  if (rebuilding) return;
+  requestRebuild(parseFloat($('exp-slider').value), { probe: true, capture: 'modified' });
+};
+$('exp-reset').onclick = () => {
+  expCap = { baseline: null, modified: null };   // clear saved evidence (P1-3)
+  const cmp = $('exp-compare'); cmp.style.display = 'none'; cmp.innerHTML = '';
+  $('exp-fault').style.display = 'none';
+  $('exp-diff').disabled = true; $('exp-copy').disabled = true;
+  $('exp-slider').value = '0'; $('exp-val').textContent = fmtOff(0);
+  requestRebuild(0);                        // rebuild the baseline geometry
+};
+
+setStage('idle', 'engine not started');
+
+async function runTakeApart() {
+  // P1-2: module-level so experiment rebuilds can refresh the fork profile
+  // (it contains the entry stone). The entry stone center uses the current entryOff.
+  {
+    const byId = id => SOLID_PARTS.find(p => p.id === id);
+    const W = (x, y) => R5(x + PIVOT[0]) + ' ' + R5(y + PIVOT[1]);
+    const rectW = (x0, y0, x1, y1) =>
+      `POLYGON((${W(x0, y0)},${W(x1, y0)},${W(x1, y1)},${W(x0, y1)},${W(x0, y0)}))`;
+    // fork pieces in the world frame (the self-intersecting U is NOT needed for
+    // interference — its valid rectangle decomposition covers it piecewise)
+    const stem   = rectW(-0.22, -1.15, 0.22, 0.9);
+    const crossb = rectW(-0.56, 0.55, 0.56, 0.9);
+    const hornL  = rectW(-0.56, 0.9, -0.30, 4.62);
+    const hornR  = rectW(0.30, 0.9, 0.56, 4.62);
+    // the pallet STONES travel with the fork — and at rest it is a stone that
+    // sits in a tooth (that's the lock), so the fork's profile must include them
+    const stoneW = L => {
+      const [lx, ly] = L, hw = SW / 2, hl = SL / 2;
+      return `POLYGON((${W(lx + hw, ly + hl)},${W(lx + hw, ly - hl)},${W(lx - hw, ly - hl)},${W(lx - hw, ly + hl)},${W(lx + hw, ly + hl)}))`;
+    };
+    const stoneE = stoneW(entryCenter(entryOff)), stoneX = stoneW(EXIT);   // P1-2: same parameter
+    const ZB = {
+      wheel:   [0.00, 0.42],   // group z 0      + local 0..0.42
+      fork:    [0.35, 0.73],   // group z 0.35   + local 0..0.38
+      balance: [0.80, 1.10],   // group z 0.8    + local 0..0.30
+    };
+    // Main-plate reference plane for the way-out rule. In this scene the DIAL/
+    // hands are at -z (z=-2.2) and the movement is on the +z side (the viewer).
+    // Every movement part sits above z=0, so a reference plane at z=0 makes all
+    // parts exit toward +z (out of the movement, toward the viewer) — away from
+    // the pointer side, the natural "pull the wheel out toward yourself" motion.
+    // (A plane at 0.3/0.6 put the wheel center (z~0.21) below it, sending the
+    // wheel off toward the dial — the bug the user saw.)
+    const PLATE = 0.0;
+    await c.query(`
+      CREATE OR REPLACE TABLE ta_parts AS
+      SELECT 'wheel' AS part, ST_GeomFromText('${byId('wheel').wkt}') AS g,
+             ${ZB.wheel[0]} AS z0, ${ZB.wheel[1]} AS z1, CASE WHEN (${ZB.wheel[0]} + ${ZB.wheel[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END AS s
+      UNION ALL SELECT 'fork',
+        ST_Union(ST_Union(ST_Union(ST_Union(ST_Union(ST_GeomFromText('${stem}'), ST_GeomFromText('${crossb}')),
+                          ST_GeomFromText('${hornL}')), ST_GeomFromText('${hornR}')),
+                          ST_GeomFromText('${stoneE}')), ST_GeomFromText('${stoneX}')),
+        ${ZB.fork[0]}, ${ZB.fork[1]}, CASE WHEN (${ZB.fork[0]} + ${ZB.fork[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END
+      UNION ALL SELECT 'balance',
+        ST_Translate(ST_GeomFromText('${byId('balance_rim').wkt}'), ${PIVOT[0]}, ${PIVOT[1] + 4.4}),
+        ${ZB.balance[0]}, ${ZB.balance[1]}, CASE WHEN (${ZB.balance[0]} + ${ZB.balance[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END`);
+    await c.query(`CREATE OR REPLACE TABLE ta_removed(part VARCHAR, rnd INT, grp VARCHAR)`);
+    // "b is in the way of a's exit (a.s)": 2D profiles overlap AND b lies AHEAD
+    // of a on its exit path (s=+1 off the front: b.z1 > a.z0 ; s=-1 off the back: b.z0 < a.z1)
+    const ONPATH = `(CASE WHEN a.s = 1 THEN b.z1 > a.z0 + 1e-9 ELSE b.z0 < a.z1 - 1e-9 END)`;
+    const rounds = [];
+    let unitTaken = false;
+    for (let r = 1; r <= 6; r++) {
+      // the reference take_apart(): everything that can go in a round goes together
+      const solo = (await c.query(`
+        SELECT a.part, a.s FROM ta_parts a
+        WHERE a.part NOT IN (SELECT part FROM ta_removed)
+          AND NOT EXISTS (SELECT 1 FROM ta_parts b
+                          WHERE b.part <> a.part
+                            AND b.part NOT IN (SELECT part FROM ta_removed)
+                            AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
+      if (solo.length) {
+        rounds.push({ parts: solo, grp: 'free — clear path' });
+        await c.query(`INSERT INTO ta_removed VALUES ` +
+          solo.map(p => `('${p.part}', ${r}, 'free')`).join(','));
+        continue;
+      }
+      // nothing is free: if the remaining parts lock ONLY each other, they form
+      // the escapement pair (wheel + fork hold one another at rest — that IS the
+      // mechanism). The reference raises 'stuck'; a watchmaker lifts the pair.
+      const rem = (await c.query(`SELECT part, s FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray();
+      if (rem.length >= 2 && !unitTaken) {
+        const u = (await c.query(`
+          SELECT a.part, a.s FROM ta_parts a
+          WHERE a.part IN (${rem.map(p => `'${p.part}'`).join(',')})
+            AND EXISTS (SELECT 1 FROM ta_parts b
+                        WHERE b.part <> a.part
+                          AND b.part IN (${rem.map(p => `'${p.part}'`).join(',')})
+                          AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
+        if (u.length === rem.length) {   // every remaining part is blocked, and only by the unit
+          rounds.push({ parts: u, grp: 'unit — mutually locked at rest (the escapement), out together' });
+          await c.query(`INSERT INTO ta_removed VALUES ` +
+            u.map(p => `('${p.part}', ${r}, 'unit')`).join(','));
+          unitTaken = true;
+          continue;
+        }
+      }
+      break;   // truly stuck
+    }
+    const stuck = (await c.query(`SELECT count(*)::DOUBLE AS n FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray()[0];
+    takeApart = { rounds, stuck: Number(stuck.n) };
+  }
+}
+
+const boot = async () => {
+  setStage('downloading', 'fetching the duckdb-wasm bundle from the CDN');
+  const duckdb = await import(DUCKDB_ESM_URL);
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const worker_url = await duckdb.createWorker(bundle.mainWorker);
+  const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker_url);
+  setStage('instantiating', 'compiling the WASM module (large on first load, cached after)');
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  c = await db.connect();
+  window.__wd = { get c() { return c; } };
+  duckVer = (await db.getVersion()).split(' ')[0];
+  $('v-ver').textContent = duckVer;
+  setStage('loading_spatial', 'LOAD spatial');
+  try { await c.query('LOAD spatial'); $('v-ext').textContent = 'loaded'; }
+  catch (e) {
+    setStage('loading_spatial', 'spatial not preloaded — INSTALL from CDN, then LOAD');
+    await c.query('INSTALL spatial; LOAD spatial;');
+    $('v-ext').textContent = 'installed';
+  }
+
+  setStage('building_map', 'building esc_map (97 x 49 wheel x fork grid, 2 ST_Intersects per state)');
+// ---------- build the collision map IN SQL ----------
+// P1-2: buildEscMap(off) is the single builder used here (off = 0, the baseline)
+// and by every experiment rebuild — boot and rebuild execute byte-identical SQL,
+// the only thing that moves is the entry stone's WKT.
+const mapRes = await buildEscMap(0);
 // prepared point-lookup: parse once, execute every frame (no per-frame SQL string parsing)
 await c.query(`PREPARE p_lookup AS
   SELECT blocked::DOUBLE AS blocked FROM esc_map
   WHERE wheel_deg = $1 AND fork_deg = $2`);
-$('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number(mapInfo.b).toLocaleString()} blocked) / ${mapMs} ms`;
+$('v-map').textContent = fmtMap(mapRes);
 
 // ---------- Ep5 solids: build ALL parts in the DB, verify them, clash-check per frame ----------
 // Each part's triangle table is inserted, then SQL verifies per part:
@@ -1145,103 +1522,10 @@ $('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number
 
     setStage('building_map', 'take-apart mini-engine (3 parts) in the DB');
   // ---------- Ep5 take_apart: iterative disassembly, ONE SQL query per round ----------
-  // Parts slide out off the back (-z). "In the way" = 3D interference: the z-band
-  // overlap AND the 2D profile overlap — the same rigorous test as p_frame.
-  // Z-BANDS ARE WORLD (the mechanism is layered in z): the fork's stem runs in a
-  // slot in the wheel plane (0.35..0.73), the balance sits above it (0.8..1.1).
-  // At rest the fork's 2D profile is in the GAPS between wheel teeth (0 contact),
-  // but the horns reach into the balance plane — so the DB derives:
-  //   round 1: fork + balance leave together   round 2: wheel.
-  {
-    const byId = id => SOLID_PARTS.find(p => p.id === id);
-    const W = (x, y) => R5(x + PIVOT[0]) + ' ' + R5(y + PIVOT[1]);
-    const rectW = (x0, y0, x1, y1) =>
-      `POLYGON((${W(x0, y0)},${W(x1, y0)},${W(x1, y1)},${W(x0, y1)},${W(x0, y0)}))`;
-    // fork pieces in the world frame (the self-intersecting U is NOT needed for
-    // interference — its valid rectangle decomposition covers it piecewise)
-    const stem   = rectW(-0.22, -1.15, 0.22, 0.9);
-    const crossb = rectW(-0.56, 0.55, 0.56, 0.9);
-    const hornL  = rectW(-0.56, 0.9, -0.30, 4.62);
-    const hornR  = rectW(0.30, 0.9, 0.56, 4.62);
-    // the pallet STONES travel with the fork — and at rest it is a stone that
-    // sits in a tooth (that's the lock), so the fork's profile must include them
-    const stoneW = L => {
-      const [lx, ly] = L, hw = SW / 2, hl = SL / 2;
-      return `POLYGON((${W(lx + hw, ly + hl)},${W(lx + hw, ly - hl)},${W(lx - hw, ly - hl)},${W(lx - hw, ly + hl)},${W(lx + hw, ly + hl)}))`;
-    };
-    const stoneE = stoneW(ENTRY), stoneX = stoneW(EXIT);
-    const ZB = {
-      wheel:   [0.00, 0.42],   // group z 0      + local 0..0.42
-      fork:    [0.35, 0.73],   // group z 0.35   + local 0..0.38
-      balance: [0.80, 1.10],   // group z 0.8    + local 0..0.30
-    };
-    // Main-plate reference plane for the way-out rule. In this scene the DIAL/
-    // hands are at -z (z=-2.2) and the movement is on the +z side (the viewer).
-    // Every movement part sits above z=0, so a reference plane at z=0 makes all
-    // parts exit toward +z (out of the movement, toward the viewer) — away from
-    // the pointer side, the natural "pull the wheel out toward yourself" motion.
-    // (A plane at 0.3/0.6 put the wheel center (z~0.21) below it, sending the
-    // wheel off toward the dial — the bug the user saw.)
-    const PLATE = 0.0;
-    await c.query(`
-      CREATE OR REPLACE TABLE ta_parts AS
-      SELECT 'wheel' AS part, ST_GeomFromText('${byId('wheel').wkt}') AS g,
-             ${ZB.wheel[0]} AS z0, ${ZB.wheel[1]} AS z1, CASE WHEN (${ZB.wheel[0]} + ${ZB.wheel[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END AS s
-      UNION ALL SELECT 'fork',
-        ST_Union(ST_Union(ST_Union(ST_Union(ST_Union(ST_GeomFromText('${stem}'), ST_GeomFromText('${crossb}')),
-                          ST_GeomFromText('${hornL}')), ST_GeomFromText('${hornR}')),
-                          ST_GeomFromText('${stoneE}')), ST_GeomFromText('${stoneX}')),
-        ${ZB.fork[0]}, ${ZB.fork[1]}, CASE WHEN (${ZB.fork[0]} + ${ZB.fork[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END
-      UNION ALL SELECT 'balance',
-        ST_Translate(ST_GeomFromText('${byId('balance_rim').wkt}'), ${PIVOT[0]}, ${PIVOT[1] + 4.4}),
-        ${ZB.balance[0]}, ${ZB.balance[1]}, CASE WHEN (${ZB.balance[0]} + ${ZB.balance[1]}) / 2.0 < ${PLATE} THEN -1 ELSE 1 END`);
-    await c.query(`CREATE OR REPLACE TABLE ta_removed(part VARCHAR, rnd INT, grp VARCHAR)`);
-    // "b is in the way of a's exit (a.s)": 2D profiles overlap AND b lies AHEAD
-    // of a on its exit path (s=+1 off the front: b.z1 > a.z0 ; s=-1 off the back: b.z0 < a.z1)
-    const ONPATH = `(CASE WHEN a.s = 1 THEN b.z1 > a.z0 + 1e-9 ELSE b.z0 < a.z1 - 1e-9 END)`;
-    const rounds = [];
-    let unitTaken = false;
-    for (let r = 1; r <= 6; r++) {
-      // the reference take_apart(): everything that can go in a round goes together
-      const solo = (await c.query(`
-        SELECT a.part, a.s FROM ta_parts a
-        WHERE a.part NOT IN (SELECT part FROM ta_removed)
-          AND NOT EXISTS (SELECT 1 FROM ta_parts b
-                          WHERE b.part <> a.part
-                            AND b.part NOT IN (SELECT part FROM ta_removed)
-                            AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
-      if (solo.length) {
-        rounds.push({ parts: solo, grp: 'free — clear path' });
-        await c.query(`INSERT INTO ta_removed VALUES ` +
-          solo.map(p => `('${p.part}', ${r}, 'free')`).join(','));
-        continue;
-      }
-      // nothing is free: if the remaining parts lock ONLY each other, they form
-      // the escapement pair (wheel + fork hold one another at rest — that IS the
-      // mechanism). The reference raises 'stuck'; a watchmaker lifts the pair.
-      const rem = (await c.query(`SELECT part, s FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray();
-      if (rem.length >= 2 && !unitTaken) {
-        const u = (await c.query(`
-          SELECT a.part, a.s FROM ta_parts a
-          WHERE a.part IN (${rem.map(p => `'${p.part}'`).join(',')})
-            AND EXISTS (SELECT 1 FROM ta_parts b
-                        WHERE b.part <> a.part
-                          AND b.part IN (${rem.map(p => `'${p.part}'`).join(',')})
-                          AND ST_Intersects(a.g, b.g) AND ${ONPATH})`)).toArray();
-        if (u.length === rem.length) {   // every remaining part is blocked, and only by the unit
-          rounds.push({ parts: u, grp: 'unit — mutually locked at rest (the escapement), out together' });
-          await c.query(`INSERT INTO ta_removed VALUES ` +
-            u.map(p => `('${p.part}', ${r}, 'unit')`).join(','));
-          unitTaken = true;
-          continue;
-        }
-      }
-      break;   // truly stuck
-    }
-    const stuck = (await c.query(`SELECT count(*)::DOUBLE AS n FROM ta_parts WHERE part NOT IN (SELECT part FROM ta_removed)`)).toArray()[0];
-    takeApart = { rounds, stuck: Number(stuck.n) };
-  }
-}
+  // P1-2: extracted into runTakeApart() so an experiment rebuild can refresh the
+  // fork profile (it contains the entry stone) with the shifted geometry.
+  await runTakeApart();
+}   // (the take-apart body lives in runTakeApart() below, before boot() is called)
 $('b-solid').onclick = () => {
   const on = !SOLID_PARTS[0].overlay.visible;
   SOLID_PARTS.forEach(p => p.overlay.visible = on);
@@ -1276,27 +1560,16 @@ $('b-take').onclick = () => showTakeApart(!($('b-take').textContent === 'Assembl
 // ONE statement. blocked uses COALESCE(…,1) so a grid miss means BLOCKED (same as
 // p_lookup: an absent state never releases the wheel) — a bare subquery would yield NULL→0.
 await c.query(P_FRAME_SQL);
-setSQL(`-- map built once (${Number(mapInfo.n).toLocaleString()} states, 2 ST_Intersects per state):
-CREATE TABLE esc_map AS
-SELECT wi*0.25 AS wheel_deg, fi*0.5-12 AS fork_deg,
-       ST_Intersects(ST_Rotate(tooth,…), ST_Translate(ST_Rotate(stone,…))) AS blocked
-FROM wheel_angles CROSS JOIN fork_angles;
-
--- Ep5 solids: ${solidInfo.parts.length} parts, ${solidInfo.tris.toLocaleString()} tris, built & verified in DuckDB
-CREATE TABLE solids(part, x1..z3);  -- earcut triangle tables
--- per part:  volume(divergence) = ST_Area(profile) × thickness
---            open_edges = 0      → ${solidInfo.match ? 'ALL PASS' : 'CHECK HUD'}
-
--- then EVERY FRAME is this single prepared statement (physics + which stone + 3D solid clash):
-${P_FRAME_SQL}
--- blocked: grid lookup (COALESCE → a grid miss stays blocked)
--- entry/exit/clash3d: live ST_Intersects on the same WKT the map was built from`);
+setSQL(sqlViewText(mapRes));
 
   // ---------- P0-3: boot complete ----------
   setStage('ready');
   clearInterval(stageTimer);
-  $('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false;
+  $('b-run').disabled = false; $('b-step').disabled = false; $('b-reset').disabled = false;
+  $('b-map').disabled = false;
   $('b-solid').disabled = false; $('b-take').disabled = false;
+  setExpBusy(false);   // P1: the experiment controls come alive with the engine
+  $('exp-status').textContent = 'engine ready — move the slider, then press Experiment (or Baseline)';
   setStatus('ready — every frame is one SQL query');
   return;
 };
@@ -1330,6 +1603,16 @@ window.__wd3d = () => ({
   solidVisible: (typeof SOLID_PARTS !== 'undefined' && SOLID_PARTS[0]) ? SOLID_PARTS[0].overlay.visible : null,
   clash3d: (typeof _clash3d !== 'undefined') ? _clash3d : null,
   trace: (typeof lastTrace !== 'undefined') ? lastTrace : null,
+  // P1: experiment state for external verification
+  entryOff: (typeof entryOff !== 'undefined') ? entryOff : null,
+  entryOffLastGood: (typeof entryOffLastGood !== 'undefined') ? entryOffLastGood : null,
+  rebuilding: (typeof rebuilding !== 'undefined') ? rebuilding : null,
+  duckVer: (typeof duckVer !== 'undefined') ? duckVer : null,
+  stallRun: (typeof stallRun !== 'undefined') ? stallRun : null,
+  nStall: (typeof N_STALL !== 'undefined') ? N_STALL : null,
+  expCap: (typeof expCap !== 'undefined') ? expCap : null,
+  lastProbe: (typeof lastProbe !== 'undefined') ? lastProbe : null,
+  entryStoneCenter: (typeof entryCenter !== 'undefined') ? entryCenter(entryOff) : null,
 });
 
 // ---------- tick sound (tiny WebAudio click, unlocked by the Start click) ----------
@@ -1361,6 +1644,9 @@ async function physicsStep(vSec) {
   frames++;
   const row0 = res.toArray()[0];
   const blocked = row0 ? Number(row0.blocked) !== 0 : true;   // absent state = blocked
+  // P1-3: consecutive substeps without wheel advance — the gate for the
+  // "Stalled by SQL solver" label (threshold N_STALL, documented in the card).
+  if (blocked) stallRun++; else stallRun = 0;
   _clash3d = row0 ? Number(row0.clash3d) !== 0 : false;      // solid-model cross-check
   if (_clash3d !== blocked) console.warn('[watchduck] 3D solid verdict diverged from physics map', { wheel: wheel % PITCH, fork, blocked, clash3d: _clash3d });
   const entry = row0 ? Number(row0.entry) : 1;   // conservative default if the row is missing
@@ -1522,19 +1808,7 @@ $('b-step').onclick = async () => {
   render3D(last.fork, last.blocked, last.entry, last.exit);
   drawTrace();   // manual stepping always refreshes the panel (bypasses the 100ms gate)
 };
-$('b-reset').onclick = () => {
-  wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;
-  _lastBeatWheel = 0; _dpbHist = [];
-  $('v-beats').textContent = '0'; $('v-adv').textContent = '0.0°';
-  $('v-dpb').textContent = '—'; $('v-rate').textContent = '—'; $('v-q').textContent = '—';
- $('v-wall').textContent = '—';
- { const vc = $('v-clash'); vc.textContent = 'idle'; vc.classList.remove('ok', 'err'); }
- _clash3d = false;
- lastTrace = null; lastTraceDraw = 0;
- drawTrace();
- $('b-copy-sql').disabled = true;
- render3D(0, false);
-};
+$('b-reset').onclick = () => resetMotion();   // P1-2: shared with the rebuild pipeline
 $('b-copy-sql').onclick = () => { if (lastTrace) copyTraceSQL(lastTrace); };
 // the trace panel collapses via its header
 $('trace-toggle').onclick = () => {
