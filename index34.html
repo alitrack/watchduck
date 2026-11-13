@@ -68,11 +68,12 @@
   <a class="wdb" href="index34.html">34-part movement</a>
   <a class="wdb" href="escapement3d.html">3D escapement</a>
   <a class="wdb" href="index2d.html">2D view</a></nav>
-  <h1>watchduck <span class="accent">· Ep5 全机芯</span><span class="tag">34 parts · 107 pieces · take-apart = live DuckDB-WASM SQL</span></h1>
+  <h1>watchduck <span class="accent">· Ep5 full movement</span><span class="tag">34 parts · 107 pieces · take-apart = live DuckDB-WASM SQL</span></h1>
   <div class="sub">
-    几何与相位离线由已验收的 native DuckDB 管线求解（8 轮拆卸黄金表 GOLDEN MATCH），快照 <b>868 KB</b> 装配进浏览器。
-    点 <b>Take apart</b>：拆卸循环在浏览器 DuckDB-WASM 里逐轮跑 <code>m_blocked()</code>（每零件每轮一条 SQL），
-    DB 说了算——本轮谁能走，本轮才动。零件沿 DB 给的退出轴爆炸（+z 表前 / −z 表后 / +x 表冠侧）。
+    Geometry and phases are solved offline by the accepted native DuckDB pipeline (8-round disassembly golden table,
+    GOLDEN MATCH); the <b>868 KB</b> snapshot is assembled in the browser. Hit <b>Take apart</b>: the disassembly loop
+    runs <code>m_blocked()</code> in DuckDB-WASM, one SQL per part per round — the DB decides; only the parts it
+    releases move this round. Parts fly out along the exit axis the DB assigns (+z front / −z back / +x crown).
   </div>
 </header>
 <main>
@@ -86,7 +87,7 @@
       <div class="row"><span>rounds computed</span><span class="v" id="v-rounds">—</span></div>
       <div class="row"><span>golden table</span><span class="v" id="v-gold">—</span></div>
       <div class="row"><span>build</span><span class="v" id="v-build">—</span></div>
-      <div class="row"><span>gl 诊断</span><span class="v" id="v-gl">—</span></div>
+      <div class="row"><span>gl diagnostics</span><span class="v" id="v-gl">—</span></div>
       <div class="btns">
         <button id="b-take" class="primary" disabled>Take apart</button>
         <button id="b-assemble" disabled>Assemble</button>
@@ -95,15 +96,15 @@
       <div id="status">booting…</div>
     </div>
     <div class="card">
-      <h3>rounds（DB 逐轮判决）</h3>
+      <h3>rounds (DB verdicts per round)</h3>
       <div id="rounds">—</div>
     </div>
     <div class="card legend">
-      <h3>图例</h3>
-      <div><b>钢 steel</b> · <b style="color:#e2554f">红宝石 ruby</b> · <b style="color:var(--gold)">镀金 gilt</b> ·
-      <b style="color:#5f6c80">夹板 plate</b> · <b style="color:#4d7bd1">烤蓝 blued</b> · <b style="color:#9fb4c8">发条 spring</b></div>
-      <div style="margin-top:4px">退出方向：↑ 表前（+z）· ↓ 表后（−z）· → 表冠（+x）</div>
-      <div style="margin-top:4px">拖拽旋转 · 滚轮缩放 · 右键平移 · <b>点零件看身份</b>（悬停显示件名，点选钉住卡片；再点同件或点空白取消）</div>
+      <h3>legend</h3>
+      <div><b>steel</b> · <b style="color:#e2554f">ruby</b> · <b style="color:var(--gold)">gilt</b> ·
+      <b style="color:#5f6c80">plate</b> · <b style="color:#4d7bd1">blued</b> · <b style="color:#9fb4c8">spring</b></div>
+      <div style="margin-top:4px">exit direction: ↑ front (+z) · ↓ back (−z) · → crown (+x)</div>
+      <div style="margin-top:4px">drag to orbit · scroll to zoom · right-drag to pan · <b>click a part for its identity</b> (hover shows the name; click pins the card; click it again or empty space to unpin)</div>
     </div>
   </aside>
 </main>
@@ -367,7 +368,7 @@ for (let i = 0; i < snap.pieces.length; i += 20)
 await c.query(`CREATE VIEW movement.v_piece AS SELECT part, piece, z0, z1, profile AS world FROM movement.piece`);
 for (const stmt of (await (await fetch('04_take_apart.sql')).text()).replace(/\/\*[\s\S]*?\*\//g, '').split(';').map(s => s.trim()).filter(Boolean))
   await c.query(stmt);
-setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)' + (typeof earcut === 'function' ? '' : '  ⚠ earcut 未加载，孔会被填死！'), typeof earcut === 'function' ? '' : 'bad');
+setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)' + (typeof earcut === 'function' ? '' : '  ⚠ earcut missing — holes will be filled solid!'), typeof earcut === 'function' ? '' : 'bad');
 // build fingerprint: lets the user report WHICH build is actually rendered (cache-buster proof)
 $('v-build').textContent = 'b' + BUILD_ID + ' earcut:' + (typeof earcut === 'function' ? 'OK' : 'MISSING!') + ' dpr:' + (Math.min(devicePixelRatio, 2));
 // live GL diagnostics in the HUD (renders on their GPU, reported back as text)
@@ -457,7 +458,7 @@ function renderRounds(liveUpTo) {
     d.className = 'r' + (liveUpTo >= rr ? ' live' : '');
     const dir = r => r.dz > 0 ? '↑' : r.dz < 0 ? '↓' : '→';
     d.innerHTML = `<span class="n">${rr}</span>` + g.map(r => `${r.part} <span class="out">${dir(r)}${r.dz? ' z':''}${r.dx? ' x':''}</span>`).join(' · ');
-    d.title = '点击爆炸到此轮';
+    d.title = 'click to explode to this round';
     d.onclick = async () => {
       if (rr > roundShown) {
         $('b-take').disabled = true; $('b-step').disabled = true; $('b-assemble').disabled = false;
@@ -550,7 +551,7 @@ for (const pc of snap.pieces) {
   const r = removals.find(x => x.part === pc.part);
   partInfo[pc.part] = { material: pc.material,
     round: r ? r.round : null,
-    dir: r ? (r.dz > 0 ? '↑ 表前' : r.dz < 0 ? '↓ 表后' : '→ 表冠') : '—',
+    dir: r ? (r.dz > 0 ? '↑ front' : r.dz < 0 ? '↓ back' : '→ crown') : '—',
     z: `${pc.z0} … ${pc.z1}` };
 }
 let lastPiece = null;   // sub-piece name of the most recent pick hit (side channel)
@@ -597,8 +598,8 @@ async function refreshPinCard() {
     const bl = await blockersOf(pinned);
     if (seq !== blockerSeq) return;   // a newer pin overtook this query
     blHTML = bl && bl.length
-      ? `<div class="bl">现在被挡：<b>${bl.join('、')}</b><span class="bln">（DB m_blockers，当前 ${roundShown} 轮状态）</span></div>`
-      : `<div class="blk">未被同轴件阻挡（可能等跨轴/后续轮次）</div>`;
+      ? `<div class="bl">held back right now by: <b>${bl.join(', ')}</b><span class="bln">(DB m_blockers, current round-${roundShown} state)</span></div>`
+      : `<div class="blk">not held back by a same-axis part (may be waiting on a cross-axis or later round)</div>`;
   }
   if (pinned) {
     pickcard.innerHTML = cardHTML(pinned) + blHTML;
@@ -608,9 +609,9 @@ async function refreshPinCard() {
 function cardHTML(part) {
   const i = partInfo[part] || {};
   return `<div class="nm">${part}</div>
-    ${pinnedPiece ? `<div class="pc">子件：${pinnedPiece}</div>` : ''}
+    ${pinnedPiece ? `<div class="pc">piece: ${pinnedPiece}</div>` : ''}
     <div class="mt">${i.material || ''} · z ${i.z || ''}</div>
-    <div class="ro">${i.round ? `DB 第 <b>${i.round}</b> 轮拆出 · ${i.dir}` : '基座（base，不拆）'}</div>`;
+    <div class="ro">${i.round ? `released by DB in round <b>${i.round}</b> · ${i.dir}` : 'base part (never removed)'}</div>`;
 }
 function showHover(part, cx, cy) {
   if (part && part !== pinned) {
@@ -687,7 +688,7 @@ function tick() {
 }
 refreshTargets();
 $('b-take').disabled = false; $('b-step').disabled = false;
-setStatus('ready — 拖拽环视，点 Take apart 看 DB 逐轮拆卸');
+setStatus('ready — drag to orbit, hit Take apart to watch the DB peel the movement round by round');
 window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
                  get jitter() { return { on: performance.now() < jitterUntil, parts: [...jitterParts] }; },
                  // invariant check: m_blocked(p) must equal (m_blockers(p) non-empty), current round state
