@@ -55,7 +55,20 @@ sigil 复核报告（laneB/report.md，18.8KB）7 findings，全部带 file:line
 
 修复后回归：geometry.py PASS；浏览器实测 entry=1/exit=0 按石高亮生效、beats 正常、err 无残留。分支已推 origin/showcase-p0（42a1d2c）。
 
+## P1（Break the Watch）验收（2026-11-13 23:00）
+
+实现：pi@8017（commits 8415168/cb21eb9/37bcc91）。工人 E2E（headless chromium）+ 协调者真机 Chromium 双验证。
+
+| 判据 | 结果 |
+|---|---|
+| 机械判据 6 项（实验 UI 48 处 / runId 守卫 / fault 门控 / geometry.py PASS / 首页解禁 / 报告落盘） | ✅ 6/6 |
+| 参数扫描证据 | ✅ 工人用 duckdb CLI v2.0 与页面 wasm 双引擎扫描 ±1.5mm，blocked 937→1,801（健康区），≤−0.55 死列（stall），≥+0.45 失锁（free run）；CLI 与 wasm 结果逐字一致 |
+| 协调者真机 E2E | ✅ `#experiment` 自动展开卡；slider −0.60 → 重建 **1,920 blocked / 354ms**（=CLI 预测）；Start → **真实 SQL 卡死**：轮停 20.5°，601 连续子步 blocked（阈值 N=40），标签 ▲ STALLED BY SQL SOLVER 带真实角度；Reset → 回 1,438 / 155ms，故障清零 |
+| 竞态守卫 | ✅ 代码审（runId/fresh() 每 await 后检查）+ 工人 E2E B（后发 Baseline 覆盖飞行中重建，被取代方零残留） |
+
+已知边界：esc_map 单代表齿建模为 P0 既有约定（exit 石 0 命中），实验全部作用于 entry 石，自洽；移动真机/Firefox/Safari 未测（P2-4 范围）。
+
 ## 结论
 
-P0-1/2/3/4 全部落地，机械验收 6/6，浏览器实测通过，复核 7 条裁决完毕（6 修 1 缓）。可进入 P1（Break the Watch）。
+P0+P1 全部落地并双端验证（M0 基线 → P0 四项 → 复核 7 条裁决 → P1 三项）。P2（Story Mode/性能面板/README/回归自动化）待下一批。
 
