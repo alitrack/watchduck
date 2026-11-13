@@ -65,6 +65,23 @@
     border-radius:10px; padding:10px 14px; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
   #diag-details > summary::-webkit-details-marker { display:none; }
   #diag-details > summary:hover { color:var(--acc); border-color:var(--acc); }
+  /* P1: Break-the-Watch experiment card (one real geometric parameter) */
+  details#exp-details > summary { list-style:none; cursor:pointer; font-size:12px; color:var(--dim);
+    text-transform:uppercase; letter-spacing:1px; font-weight:600; margin-bottom:8px; user-select:none; }
+  details#exp-details > summary::-webkit-details-marker { display:none; }
+  details#exp-details > summary:hover { color:var(--acc); }
+  #exp-card input[type=range] { width:100%; margin:6px 0 2px; accent-color:var(--acc); }
+  #exp-card input[type=range]:disabled { opacity:.4; }
+  .exp-fault { margin-top:8px; padding:7px 9px; border-radius:6px; font-size:11.5px; line-height:1.5; }
+  .exp-fault.err { background:rgba(247,119,119,.12); border:1px solid var(--bad); color:var(--bad); }
+  .exp-fault.warn { background:rgba(224,169,62,.12); border:1px solid #e0a93e; color:#e0a93e; }
+  #exp-compare { margin-top:8px; }
+  #exp-compare .cmp-grid { display:flex; gap:10px; flex-wrap:wrap; }
+  #exp-compare .cmp-col { flex:1 1 150px; min-width:140px; background:#0b0d11; border:1px solid var(--line); border-radius:6px; padding:8px 9px; }
+  #exp-compare .cmp-col h3 { margin:0 0 6px; font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+  #exp-compare .cmp-row { display:flex; justify-content:space-between; gap:8px; font-size:11px; padding:1.5px 0; }
+  #exp-compare .cmp-row .cv { color:var(--acc); text-align:right; }
+  #exp-compare .cmp-diff { margin-top:8px; background:#0b0d11; border:1px solid var(--line); border-radius:6px; padding:8px 9px; font-size:11.5px; line-height:1.6; }
   @media (max-width:560px) {
     main { padding:12px 12px 24px; }
     .side { flex:1 1 auto; min-width:0; max-width:none; }
@@ -147,6 +164,42 @@
       <div class="hint" style="margin-top:7px">demo path: ① Start → ② it ticks (▲ red glow = collision) →
       ③ Show collision map → ④ Pause / Step → ⑤ read “Why did it tick?”</div>
     </div>
+    <!-- P1: Break the Watch — one real geometric parameter (entry stone offset) wired
+         through WKT → esc_map → p_frame → 3D meshes. Cards stay honest: every figure
+         shown in it is read from the rebuilt SQL, never synthesized. -->
+    <details class="card" id="exp-details" open>
+      <summary class="exp-summary" id="exp-summary">Break the Watch · one real parameter <span class="tr-chev" id="exp-chev">▾</span></summary>
+      <div id="exp-card">
+        <div class="hint" style="padding:0 0 6px">
+          The entry pallet stone, shifted along its long axis (mm). Applying a value regenerates the
+          stone's WKT, rebuilds <code>esc_map</code> (97 × 49 wheel-phase × fork-angle grid, 2
+          <code>ST_Intersects</code> per cell) and re-prepares <code>p_frame</code> in DuckDB — and the 3D
+          stone, wireframe overlay and take-apart profile are rendered from that same parameter.
+          <b>0.00 = the frozen baseline</b> (scripts/geometry.py).</div>
+        <div class="row"><span>entry-stone offset (long axis)</span><span class="v" id="exp-val">0.00 mm</span></div>
+        <input type="range" id="exp-slider" min="-0.8" max="0.8" step="0.05" value="0" disabled
+               aria-label="entry pallet stone offset in millimetres along its long axis">
+        <div class="legend" style="padding:4px 0 0">
+          <span><span class="vchip bad">▲</span>≤ −0.55: over-lock — dead phase columns → stall</span>
+          <span><span class="vchip good">○</span>−0.5…+0.1: healthy (lock ≥ 35%)</span>
+          <span><span class="vchip good">○</span>≥ +0.4: lock lost → free run</span>
+        </div>
+        <div class="btns" style="margin-top:8px">
+          <button id="exp-baseline" disabled title="Rebuild at 0.00 mm (baseline) and record a 40-beat probe">Baseline</button>
+          <button id="exp-experiment" disabled title="Rebuild at the slider value and record a 40-beat probe">Experiment</button>
+          <button id="exp-reset" disabled title="Stop, rebuild the baseline geometry (0.00 mm), clear captures and fault state">Reset</button>
+        </div>
+        <div id="exp-fault" class="exp-fault" style="display:none"></div>
+        <div class="hint" style="margin-top:8px" id="exp-status">the page currently runs the 0.00 mm baseline; the controls enable once the engine is ready</div>
+        <div class="row" style="margin-top:6px"><span>Baseline vs Modified</span>
+          <button id="exp-diff" disabled style="padding:2px 8px" title="side-by-side real query results + what changed">Show difference</button></div>
+        <div id="exp-compare" style="display:none"></div>
+        <div class="btns" style="margin-top:6px"><button id="exp-copy" disabled title="copy experiment parameters, capture time and duckdb version for sharing">Copy summary (params · time · duckdb)</button></div>
+        <div class="hint">Fault labels are gated, never synthesized: “Stalled by SQL solver” appears only after
+        N=40 consecutive SQL substeps without wheel advance; “Free run” only while the rebuilt map reports
+        0 blocked states.</div>
+      </div>
+    </details>
     <div class="card" id="trace-card">
       <h2 class="trace-toggle" id="trace-toggle">Why did it tick? <span class="tr-chev" id="trace-chev">▾</span></h2>
       <div id="trace-body">
@@ -268,6 +321,17 @@ const sqlView = $('sql-view');
 function setStatus(t) { $('v-state').textContent = t; }
 function setSQL(t) { sqlView.textContent = t; }
 
+// P1-1: the ONE experimental parameter of "Break the Watch" — the entry pallet
+// stone's offset along its long axis (mm). 0 = the frozen baseline geometry
+// (scripts/geometry.py). The entry stone's fork-local center becomes
+// [ENTRY[0], ENTRY[1] + off]. EVERYTHING downstream — the esc_map WKT, the
+// p_frame WKT, the 3D stone mesh + chaton + anchor arm, the wireframe overlay,
+// the take-apart fork profile — is derived from this single number, so the
+// SQL verdicts and the rendered geometry can never drift apart.
+// (Chosen by a real ±0.4 mm scan: blocked states 1801→937 across −0.4…+0.4,
+//  285+ map cells flip at ±0.3; see laneA/REPORT-P1.md for the evidence.)
+let entryOff = 0;
+function entryCenter(off) { return [ENTRY[0], ENTRY[1] + (off === undefined ? 0 : off)]; }
 function toothWKT() {
   // tooth base position: at the TOP (90 deg), where the fork lives.
   // rotate local (x, y) -> (-y, x) so the tooth at (R+dx, dy) sits on top of the wheel.
@@ -275,7 +339,7 @@ function toothWKT() {
   pts.push(pts[0]);  // GEOS requires closed rings
   return 'POLYGON((' + pts.join(', ') + '))';
 }
-function stoneWKTaboutPivot(which) {
+function stoneWKTaboutPivot(which, off) {
   // The stone's LOCAL-frame polygon (about the fork pivot at the ORIGIN) — the
   // same local frame the 3D stone meshes use, so overlay rows, meshes and the
   // SQL collision share one source of truth. The per-frame SQL applies
@@ -283,7 +347,10 @@ function stoneWKTaboutPivot(which) {
   // which is mathematically IDENTICAL to scripts/geometry.py stone_poly (rotate
   // the stone center about the pivot, then offset by the rotated long/wide dirs):
   // R(lx±hw, ly±hl) = R(lx,ly) ± hw·(cos,sin) ± hl·(−sin,cos) = center ± hw·wid ± hl·long.
-  const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+  // P1-1: the entry stone's center shifts by `off` (mm) along its long axis
+  // (local +y); the exit stone is never offset (it has no free parameter left
+  // once the entry stone carries the whole experiment).
+  const [lx, ly] = which === 'entry' ? entryCenter(off) : EXIT;
   const longd = [0,1], widd = [1,0];
   const hw = SW/2, hl = SL/2;
   const c = (su,sv) => [lx + su*hl*longd[0] + sv*hw*widd[0], ly + su*hl*longd[1] + sv*hw*widd[1]];
@@ -545,7 +612,7 @@ const SOLID_PARTS = [];
 }
 // (2) pallet stones — the exact physics rectangles (local frame about PIVOT)
 for (const which of ['entry', 'exit']) {
-  const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+  const [lx, ly] = which === 'entry' ? entryCenter(entryOff) : EXIT;   // P1-1: same parameter
   const hw = SW / 2, hl = SL / 2, z0 = 0.08, z1 = 0.08 + 0.26;
   // long axis along y (matches stoneWKTaboutPivot / geometry.py / the 3D mesh):
   // x spans ±SW/2, y spans ±SL/2 about the stone centre.
@@ -612,8 +679,9 @@ const forkGroup = new THREE.Group();
 forkGroup.position.set(PIVOT[0], PIVOT[1], 0.35);
 {
   // anchor arms pivot→stones
+  let entryArm = null, entryChaton = null;   // P1-1: refs so the entry stone group tracks entryOff
   for (const which of ['entry', 'exit']) {
-    const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+    const [lx, ly] = which === 'entry' ? entryCenter(entryOff) : EXIT;   // P1-1: same parameter
     const len = Math.hypot(lx, ly);
     const ang = Math.atan2(ly, lx);
     const arm = shadowed(new THREE.Mesh(new THREE.BoxGeometry(len, 0.62, 0.4), STEEL));
@@ -625,7 +693,9 @@ forkGroup.position.set(PIVOT[0], PIVOT[1], 0.35);
       new THREE.ExtrudeGeometry(roundedRectShape(SW + 0.42, SL + 0.42, 0.2), { ...EX, depth: 0.3, bevelSize: 0.06, bevelThickness: 0.05 }), GOLD));
     chaton.position.set(lx, ly, -0.12);
     forkGroup.add(chaton);
+    if (which === 'entry') { entryArm = arm; entryChaton = chaton; }
   }
+  window.__wdForkRefs = { entryArm, entryChaton };   // diagnostic + P1-2 rebuild target
   // lever body: stem down + two fork horns up toward the balance (U with gap)
   const lever = new THREE.Shape();
   const L = [
@@ -655,7 +725,7 @@ forkGroup.position.set(PIVOT[0], PIVOT[1], 0.35);
 // ruby stones (the physics polygons, rendered) — added after the group so order is explicit
 const stoneMeshes = [];
 for (const which of ['entry', 'exit']) {
-  const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
+  const [lx, ly] = which === 'entry' ? entryCenter(entryOff) : EXIT;   // P1-1: same parameter
   const st = shadowed(new THREE.Mesh(
     new THREE.ExtrudeGeometry(roundedRectShape(SW + 0.06, SL + 0.06, 0.14), { ...EX, depth: 0.26, bevelSize: 0.05, bevelThickness: 0.04 }), RUBY.clone()));
   st.position.set(lx, ly, 0.08);
@@ -1480,6 +1550,21 @@ if (window.innerWidth < 600) {
   const tb = $('trace-body'); if (tb) tb.style.display = 'none';
   const tc = $('trace-chev'); if (tc) tc.textContent = '▸';
 }
+// P1: the experiment card is open on desktop, collapsed on narrow screens UNLESS the
+// page was opened via #experiment (the hub's "Break the Watch" link), which force-opens
+// it and scrolls it into view.
+const expDetails = $('exp-details'), expChev = $('exp-chev');
+if (expDetails) {
+  if (location.hash === '#experiment') expDetails.setAttribute('open', '');
+  else if (window.innerWidth < 600) expDetails.removeAttribute('open');
+}
+$('exp-summary').onclick = () => {
+  const open = expDetails.hasAttribute('open');
+  if (open) expDetails.removeAttribute('open'); else expDetails.setAttribute('open', '');
+  if (expChev) expChev.textContent = open ? '▸' : '▾';
+};
+if (location.hash === '#experiment' && window.innerWidth < 600)
+  setTimeout(() => $('exp-card').scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 400);
 render3D(0, false);
 </script>
 </body>
