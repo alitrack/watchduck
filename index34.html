@@ -43,6 +43,7 @@
   #pickcard { position:absolute; left:16px; bottom:16px; background:rgba(23,26,33,.94); border:1px solid var(--line);
     border-radius:8px; padding:8px 12px; font-size:12px; max-width:260px; display:none; pointer-events:none; z-index:5; }
   #pickcard .nm { color:var(--acc); font-weight:700; font-size:13px; }
+  #pickcard .pc { color:var(--gold); margin-top:2px; font-size:11.5px; }
   #pickcard .mt { color:var(--dim); }
   #pickcard .ro { margin-top:3px; }
   #pickcard .ro b { color:var(--gold); }
@@ -114,7 +115,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as duckdb from 'duckdb-wasm';
 
 const $ = id => document.getElementById(id);
-const BUILD_ID = '20261113-layout700-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
+const BUILD_ID = '20261113-ring3d-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
 const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
 window.__PE = [];
 addEventListener('error', e => { window.__PE.push(e.message); });
@@ -201,27 +202,36 @@ function parseWKT(wkt) {
   return rings;
 }
 
-function buildMesh(rings, material, z0, z1) {
-  // ShapeGeometry with holes, positioned at watch z (three z = watch z), lying in watch xy (three x, -y).
+function buildMesh(rings, material, z0, z1, piece) {
+  // ShapeGeometry with holes, positioned at watch z (three z = watch z), lying in watch xy (three coords).
   const [outer, ...holes] = rings;
   if (outer.length < 3) return null;
   const shape = new THREE.Shape(outer.map(p => new THREE.Vector2(...MAP(p[0], p[1]))));
   for (const h of holes) if (h.length >= 3) shape.holes.push(new THREE.Path(h.map(p => new THREE.Vector2(...MAP(p[0], p[1])))));
   let geo;
-  try { geo = new THREE.ShapeGeometry(shape, 12); }
-  catch { // self-intersecting (e.g. the mainspring coil): triangulate each ring independently
-    geo = new THREE.BufferGeometry();
-    const pos = [], idx = [];
-    rings.forEach(ring => {
-      const flat = [], holeIdx = [];
-      ring.forEach(p => flat.push(p[0], p[1]));
-      const tris = (typeof earcut === 'function') ? earcut(flat, holeIdx.length ? holeIdx : null) : (function(){ const t=[]; for(let i=1;i<flat.length/2-1;i++) t.push(0,i,i+1); return t; })();
-      const base = pos.length / 2;
-      ring.forEach(p => pos.push(p[0], p[1], 0));
-      tris.forEach(t => idx.push(base + t));
-    });
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setIndex(idx);
+  if (piece === 'seconds ring') {
+    // Ep5's gilt bezel around the seconds subdial: design thickness is 0.02 mm — a paper-flat
+    // sliver that, viewed up close, reads as a "scraped" shiny strip. Extrude it to a real
+    // 0.08 mm ring GROWING DOWN (its top stays flush with the dial at z0, so the seconds hand
+    // at z 2.62–2.66 stays on top), so it has side walls and reads as a proper metal bezel.
+    geo = new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false, curveSegments: 24 });
+    geo.translate(0, 0, -0.08);
+  } else {
+    try { geo = new THREE.ShapeGeometry(shape, 12); }
+    catch { // self-intersecting (e.g. the mainspring coil): triangulate each ring independently
+      geo = new THREE.BufferGeometry();
+      const pos = [], idx = [];
+      rings.forEach(ring => {
+        const flat = [], holeIdx = [];
+        ring.forEach(p => flat.push(p[0], p[1]));
+        const tris = (typeof earcut === 'function') ? earcut(flat, holeIdx.length ? holeIdx : null) : (function(){ const t=[]; for(let i=1;i<flat.length/2-1;i++) t.push(0,i,i+1); return t; })();
+        const base = pos.length / 2;
+        ring.forEach(p => pos.push(p[0], p[1], 0));
+        tris.forEach(t => idx.push(base + t));
+      });
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setIndex(idx);
+    }
   }
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, material);
@@ -269,9 +279,10 @@ const partXY = {};   // per-part centroid in watch coords, for the radial fan-ou
 for (const pc of snap.pieces) {
   const isStem = isX(pc.part);
   const mesh = isStem ? buildStemPiece(pc.wkt, MATS[pc.material] || MATS.steel, pc.z0, pc.z1)
-                      : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1);
+                      : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1, pc.piece);
   if (!mesh) continue;
   mesh.material = mesh.material.clone(); // per-part material so hover glow doesn't leak to same-material parts
+  mesh.userData.piece = pc.piece;   // sub-piece name (e.g. "seconds ring") — shows in the picker card
   // hands spin about their OWN bore, not the dial centre: the seconds hand lives on the
   // small fourth-wheel subdial, so shift the geometry until its bore ring is the local origin
   if (/hand$/.test(pc.part)) {
@@ -533,6 +544,7 @@ for (const pc of snap.pieces) {
     dir: r ? (r.dz > 0 ? '↑ 表前' : r.dz < 0 ? '↓ 表后' : '→ 表冠') : '—',
     z: `${pc.z0} … ${pc.z1}` };
 }
+let lastPiece = null;   // sub-piece name of the most recent pick hit (side channel)
 function pickAt(cx, cy) {
   const rect = canvas.getBoundingClientRect();
   ndc.set((cx - rect.left) / rect.width * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
@@ -541,8 +553,9 @@ function pickAt(cx, cy) {
   for (const h of hits) {
     let o = h.object;
     while (o && !o.userData.part) o = o.parent;
-    if (o && o.userData.part) return o.userData.part;
+    if (o && o.userData.part) { lastPiece = h.object.userData.piece || o.userData.piece || null; return o.userData.part; }
   }
+  lastPiece = null;
   return null;
 }
 let pinned = null, hovered = null, hoverGlow = null;
@@ -586,19 +599,22 @@ async function refreshPinCard() {
 function cardHTML(part) {
   const i = partInfo[part] || {};
   return `<div class="nm">${part}</div>
+    ${pinnedPiece ? `<div class="pc">子件：${pinnedPiece}</div>` : ''}
     <div class="mt">${i.material || ''} · z ${i.z || ''}</div>
     <div class="ro">${i.round ? `DB 第 <b>${i.round}</b> 轮拆出 · ${i.dir}` : '基座（base，不拆）'}</div>`;
 }
 function showHover(part, cx, cy) {
   if (part && part !== pinned) {
-    tip.textContent = part;
+    tip.textContent = lastPiece ? `${part} · ${lastPiece}` : part;
     const rect = canvas.parentElement.getBoundingClientRect();
     tip.style.left = (cx - rect.left + 14) + 'px';
     tip.style.top = (cy - rect.top + 10) + 'px';
     tip.style.display = 'block';
   } else tip.style.display = 'none';
 }
+let pinnedPiece = null;
 function setPinned(part) {
+  pinnedPiece = lastPiece;   // sub-piece captured at the moment of the pin
   if (part) { pickcard.innerHTML = cardHTML(part); pickcard.style.display = 'block'; }
   else pickcard.style.display = 'none';
   const old = pinned;
@@ -696,7 +712,31 @@ window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
                    const v = new THREE.Vector3(0, 0, 0);
                    m.localToWorld(v);
                    return [v.x, v.y, v.z];
-                 } };
+                 },
+                 projPt(wx, wy, wz) {
+                   const v = new THREE.Vector3(wx, wy, wz);
+                   v.project(camera);
+                   const r = canvas.getBoundingClientRect();
+                   return { x: (v.x + 1) / 2 * r.width + r.left, y: (1 - v.y) / 2 * r.height + r.top };
+                 },
+                 // debug: which meshes does the ray from the camera through (wx,wy,wz) hit, in order?
+                 rayAt(wx, wy, wz) {
+                   const rc2 = new THREE.Raycaster();
+                   const v = new THREE.Vector3(wx, wy, wz);
+                   const dir = v.clone().sub(camera.position).normalize();
+                   rc2.set(camera.position.clone(), dir);
+                   const hits = rc2.intersectObjects(movement.children, true);
+                   return hits.slice(0, 6).map(h => {
+                     let o = h.object;
+                     while (o && !o.userData.part) o = o.parent;
+                     return { dist: +h.distance.toFixed(2), part: o ? o.userData.part : '?', piece: h.object.userData.piece || null };
+                   });
+                 },
+                 // debug: the real pick pipeline at a screen pixel
+                 pickDebug(px, py) {
+                   const part = pickAt(px, py);
+                   return { part, piece: lastPiece };
+                 } }
 tick();
 </script>
 </body>
