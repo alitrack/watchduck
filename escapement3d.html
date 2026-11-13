@@ -38,6 +38,27 @@
   .wdbar .lbl { color:var(--dim); font-size:11px; margin-right:8px; letter-spacing:1px; }
   .wdbar .wdb { font-size:11.5px; color:var(--dim); text-decoration:none; padding:4px 10px; border:1px solid transparent; border-radius:6px; }
   .wdbar .wdb:hover { color:var(--acc); border-color:var(--line); }
+  .wdbar button.wdb { background:transparent; }
+  /* P2-1: Story Mode — overlay + CSS spotlight. The spotlight is a fixed box with a
+     huge box-shadow: everything outside the highlighted element dims, the target
+     stays sharp. The step card is pinned to the bottom; no motion beyond the spot
+     move (disabled under prefers-reduced-motion). */
+  .story-overlay { position:fixed; inset:0; z-index:60; }
+  .story-overlay[hidden] { display:none; }
+  .story-spot { position:fixed; display:none; border:2px solid var(--acc); border-radius:8px;
+    box-shadow:0 0 0 9999px rgba(8,10,14,.82); pointer-events:none;
+    transition:left .15s ease, top .15s ease, width .15s ease, height .15s ease; }
+  @media (prefers-reduced-motion: reduce) { .story-spot { transition:none; } }
+  .story-card { position:fixed; left:50%; bottom:20px; transform:translateX(-50%);
+    width:min(600px, calc(100vw - 28px)); background:var(--panel); border:1px solid var(--acc);
+    border-radius:10px; padding:12px 16px 14px; box-shadow:0 10px 34px rgba(0,0,0,.55); }
+  .story-card:focus { outline:2px solid var(--acc); outline-offset:2px; }
+  .story-stepmeta { font-size:10.5px; color:var(--dim); letter-spacing:1.5px; text-transform:uppercase; }
+  #story-title { margin:4px 0 8px; font-size:16px; color:var(--acc); }
+  .story-text { font-size:12.5px; line-height:1.7; white-space:pre-line; }
+  .story-btns { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  #story-action-row { margin-top:8px; }
+  .story-hint { font-size:10.5px; color:var(--dim); margin-top:9px; }
   /* P0-3 loading state machine: banner over the canvas. No fake progress: the CDN
      does not report bytes, so the banner shows stage + real elapsed time. */
   .boot-banner { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:4; max-width:94%;
@@ -103,7 +124,8 @@
   <a class="wdb" href="index.html">Home</a>
   <a class="wdb" href="index34.html">34-part movement</a>
   <a class="wdb" href="escapement3d.html">3D escapement</a>
-  <a class="wdb" href="index2d.html">2D view</a></nav>
+  <a class="wdb" href="index2d.html">2D view</a>
+  <button class="wdb" id="b-story" title="4-step guided tour of what SQL computes on this page (~90 s): model the metal → ask SQL → observe the tick → break &amp; recover" aria-label="Start the 4-step story tour">Story · 90 s</button></nav>
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser — 3D</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
   DuckDB-WASM asks <b>do these shapes overlap?</b> on a 97 × 49 wheel-phase × fork-angle grid
@@ -257,6 +279,26 @@
     </details>
   </div>
 </main>
+<!-- P2-1: Story Mode — a 4-step guided layer (overlay + CSS spotlight) over the
+     running demo. It adds NO engine of its own: every step only points at an
+     existing, live element of this page (geometry / SQL panel / trace verdict /
+     experiment card) and narrates what it actually is. Skip via the button or
+     Esc; ←/→ move. #story (hub CTA) auto-starts it on load. -->
+<div id="story-overlay" class="story-overlay" role="dialog" aria-modal="true" aria-labelledby="story-title" hidden>
+  <div id="story-spot" class="story-spot" aria-hidden="true"></div>
+  <div id="story-card" class="story-card" tabindex="-1" aria-label="Story — guided tour of the live demo">
+    <div class="story-stepmeta" id="story-stepmeta" aria-hidden="true">story · 1 / 4</div>
+    <h3 id="story-title">…</h3>
+    <div class="story-text" id="story-text" aria-live="polite"></div>
+    <div id="story-action-row" style="display:none"><button id="story-action" type="button"></button></div>
+    <div class="story-btns">
+      <button id="story-prev" type="button">← Back</button>
+      <button id="story-next" type="button">Next →</button>
+      <button id="story-skip" type="button">Skip story (Esc)</button>
+    </div>
+    <div class="story-hint">← / → next &amp; back · Esc skip — the story only narrates the live demo, it is not a second engine</div>
+  </div>
+</div>
 <footer>
   Method after <a href="https://sqlartist.github.io/posts/the-watchmaker-building-a-mechanical-watch-in-a-database/" target="_blank">“The Watchmaker” (SQL Server → PostGIS)</a>;
   interactive inspiration: Bartosz Ciechanowski’s <a href="https://ciechanow.ski/mechanical-watch/" target="_blank">Mechanical Watch</a>.
@@ -1998,6 +2040,153 @@ $('exp-summary').addEventListener('keydown', e => {
 });
 if (location.hash === '#experiment' && window.innerWidth < 600)
   setTimeout(() => $('exp-card').scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 400);
+
+// ============================================================================
+// P2-1: Story Mode — 4 steps: Model the metal → Ask SQL → Observe the tick →
+// Break & recover. Implemented as an overlay + CSS spotlight over the EXISTING
+// page: each step highlights a real, live element (the 3D geometry, the SQL
+// panel, the trace verdict, the experiment card) and the narration says what it
+// is and is not — labelling "not a continuous-dynamics engine" on every step,
+// because the physics here is a discrete state grid + one prepared query per
+// 8 ms substep, never integrated motion. Skip button + keyboard (←/→/Esc);
+// #story (hub CTA / header button) starts it. A full pass takes 60–90 s of
+// reading; nothing in the story runs any new simulation of its own (the one
+// optional action, "Start the watch", just clicks the existing Start button).
+// ============================================================================
+const STORY_STEPS = [
+  {
+    title: '1 · Model the metal',
+    target: () => $('scene'),
+    text: () => `Every part of this mechanism is a polygon with real coordinates: the escape
+wheel is 15 convex quads on a 10 mm rim (24° pitch), each pallet stone a
+4.17 × 0.94 mm rectangle on the fork, the lever an 11-point U. DuckDB stores
+exactly these shapes as WKT strings. No mass, no torque, no integration —
+“model the metal” means drawing the cross-sections, not solving Newton.`,
+  },
+  {
+    title: '2 · Ask SQL',
+    target: () => $('sql-view') && $('sql-view').closest('.card'),
+    ensure: () => { const dd = $('diag-details'); if (dd && !dd.hasAttribute('open')) dd.setAttribute('open', ''); },
+    text: () => `All the physics is two SQL artifacts. (a) esc_map — a 97 × 49 grid of wheel
+phase × fork angle, built once in the database: one verdict per cell, each from
+2 ST_Intersects. (b) p_frame — ONE prepared statement executed on every 8 ms
+substep, returning blocked / entry / exit. The highlighted panel shows the exact
+statement in force right now — including the geometry it was prepared with.`,
+  },
+  {
+    title: '3 · Observe the tick',
+    target: () => $('trace-card'),
+    ensure: () => { const tb = $('trace-body'); if (tb && tb.style.display === 'none') toggleTracePanel(); },
+    action: () => {
+      const ready = window.__wdBootState === 'ready';
+      return {
+        label: !ready ? 'Start the watch — engine still loading…' : (running ? 'The watch is running — watch the verdict flip' : 'Start the watch'),
+        disabled: !ready || running,
+        fn: () => { if (window.__wdBootState === 'ready' && !running) $('b-run').click(); },
+      };
+    },
+    text: () => (window.__wdBootState === 'ready'
+      ? `Press Start (button above, or the one in the Watch card). Every tick is one query:\nif p_frame returns blocked = 1 (▲ COLLISION) a stone holds the wheel; if\nblocked = 0 (○ FREE) the wheel advances. The red glow on the stones is driven\nby that same verdict, not by the renderer — watch the “last verdict” row flip\nas the fork swings. That row IS the watch’s entire physics.`
+      : (window.__wdBootState === 'failed'
+      ? `The engine failed to load (see the banner above — Retry, or go back to the hub).\nEverything else on this page is still the story: the shapes, the SQL, and the\nexperiment card are static and real even before the engine answers.`
+      : `The engine is still loading (stage: ${window.__wdBootState}). The story works\neither way — once the status card reads “ready”, press Start: every tick is one\nquery, and the trace panel shows the last real verdict (▲ blocked = 1,\n○ blocked = 0). The stone glow follows that verdict, never the renderer.`)),
+  },
+  {
+    title: '4 · Break & recover',
+    target: () => $('exp-details'),
+    ensure: () => { const d = $('exp-details'); if (d && !d.hasAttribute('open')) toggleExpCard(); },
+    text: () => `The experiment card moves exactly one real parameter — the entry stone, in\nmillimetres — and rebuilds everything downstream in DuckDB: new WKT →\nCREATE OR REPLACE esc_map → PREPARE p_frame. At ≤ −0.55 mm the map grows dead\ncolumns and the solver stalls (no wheel advance for N = 40 substeps); at\n≥ +0.4 mm it loses lock and free-runs. Reset restores the 0.00 mm baseline.\nThe faults are properties of the rebuilt collision map — never an animation.`,
+  },
+];
+
+let story = { on: false, step: 0 };
+const storyEls = {
+  overlay: $('story-overlay'), spot: $('story-spot'), card: $('story-card'),
+  stepmeta: $('story-stepmeta'), title: $('story-title'), text: $('story-text'),
+  prev: $('story-prev'), next: $('story-next'), skip: $('story-skip'),
+  action: $('story-action'), actionRow: $('story-action-row'),
+};
+
+function storyPlaceSpot() {
+  const step = STORY_STEPS[story.step];
+  const el = step && step.target();
+  const spot = storyEls.spot;
+  if (!el || el.nodeType !== 1) { spot.style.display = 'none'; return; }
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) { spot.style.display = 'none'; return; }
+  const pad = 8;
+  spot.style.display = 'block';
+  spot.style.left = Math.max(4, r.left - pad) + 'px';
+  spot.style.top = Math.max(4, r.top - pad) + 'px';
+  spot.style.width = Math.min(innerWidth - 8, r.width + 2 * pad) + 'px';
+  spot.style.height = Math.min(innerHeight - 8, r.height + 2 * pad) + 'px';
+}
+
+function storyShow() {
+  const step = STORY_STEPS[story.step];
+  if (step.ensure) { try { step.ensure(); } catch (e) {} }
+  storyEls.stepmeta.textContent = `story · ${story.step + 1} / ${STORY_STEPS.length}`;
+  storyEls.title.textContent = step.title;
+  storyEls.text.textContent = step.text();
+  if (step.action) {
+    const a = step.action();
+    storyEls.actionRow.style.display = 'block';
+    storyEls.action.textContent = a.label;
+    storyEls.action.disabled = !!a.disabled;
+    storyEls.action.onclick = () => { if (!a.disabled) a.fn(); };
+  } else {
+    storyEls.actionRow.style.display = 'none';
+  }
+  storyEls.prev.disabled = story.step === 0;
+  storyEls.next.textContent = story.step === STORY_STEPS.length - 1 ? 'Finish ✓' : 'Next →';
+  storyPlaceSpot();
+  const el = step.target();
+  if (el && el.scrollIntoView)
+    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+}
+
+let storySpotRaf = 0;
+function storyReposition() {
+  cancelAnimationFrame(storySpotRaf);
+  storySpotRaf = requestAnimationFrame(storyPlaceSpot);
+}
+
+function startStory(fromButton) {
+  if (story.on) return;
+  story.on = true; story.step = 0;
+  storyEls.overlay.hidden = false;
+  if (fromButton) history.replaceState(null, '', '#story');   // shareable state
+  storyShow();
+  storyEls.card.focus();
+}
+function endStory() {
+  if (!story.on) return;
+  story.on = false;
+  storyEls.overlay.hidden = true;
+  const b = $('b-story'); if (b) b.focus();
+}
+function storyNext() {
+  if (story.step < STORY_STEPS.length - 1) { story.step++; storyShow(); }
+  else endStory();
+}
+function storyPrev() { if (story.step > 0) { story.step--; storyShow(); } }
+
+storyEls.next.onclick = storyNext;
+storyEls.prev.onclick = storyPrev;
+storyEls.skip.onclick = endStory;
+// keyboard: ←/→ step, Esc skip (document-level, works regardless of focus)
+document.addEventListener('keydown', e => {
+  if (!story.on) return;
+  if (e.key === 'Escape') { e.preventDefault(); endStory(); }
+  else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); storyNext(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); storyPrev(); }
+});
+addEventListener('scroll', () => { if (story.on) storyReposition(); }, { passive: true });
+addEventListener('resize', () => { if (story.on) storyReposition(); });
+$('b-story').onclick = () => startStory(true);
+// the hub's CTA lands on escapement3d.html#story → auto-start after layout settles
+if (location.hash === '#story') setTimeout(() => startStory(false), 250);
+
 render3D(0, false);
 </script>
 </body>
