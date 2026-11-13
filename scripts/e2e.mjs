@@ -181,7 +181,8 @@ async function runBrowser() {
     for (;;) {
       let v = null;
       try { v = await page.evaluate(fn, arg); } catch { /* page mid-navigation */ }
-      if (v && expect(v)) return v;
+      // `v !== null` (not truthy): a legitimate result can be false / 0 / ''
+      if (v !== null && expect(v)) return v;
       if (Date.now() - t0 > timeoutMs) throw new Error(`timed out after ${timeoutMs} ms waiting for: ${what}`);
       await new Promise((r) => setTimeout(r, 250));
     }
