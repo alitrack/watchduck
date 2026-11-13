@@ -588,6 +588,21 @@ $('b-take').disabled = false; $('b-step').disabled = false;
 setStatus('ready — 拖拽环视，点 Take apart 看 DB 逐轮拆卸');
 window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
                  get jitter() { return { on: performance.now() < jitterUntil, parts: [...jitterParts] }; },
+                 // invariant check: m_blocked(p) must equal (m_blockers(p) non-empty), current round state
+                 async checkConsistency() {
+                   const out = [];
+                   for (const p of Object.keys(wayOut)) {
+                     const w = wayOut[p];
+                     if (!partMat[p]) continue;
+                     const hit = await Q(`SELECT blocked FROM m_blocked('${p.replace(/'/g, "''")}', ${w.s})`);
+                     const bl = await Q(`SELECT blocker FROM m_blockers('${p.replace(/'/g, "''")}', ${w.s})`);
+                     const blocked = hit.length ? !!hit[0].blocked : false;   // m_blocked: no row = not blocked
+                     out.push({ p, blocked, n: bl.length,
+                                who: bl.map(x => x.blocker).join(','),
+                                ok: blocked === (bl.length > 0) });
+                   }
+                   return out;
+                 },
                  screenPos(part) {
                    const m = (partMat[part] || [])[0];
                    if (!m) return null;
