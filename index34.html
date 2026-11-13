@@ -225,11 +225,15 @@ function buildStemPiece(wkt, material, z0, z1) {
   const g = new THREE.CylinderGeometry(1, 1, 1, 24);
   g.rotateZ(Math.PI / 2); // axis -> x
   const m = new THREE.Mesh(g, material);
-  // scale to the circle: fit bounding box in (y, z)
+  // fit the circle properly: centroid + mean radius (ring = watch (y, z) points)
+  let cy = 0, cz = 0;
+  for (const [a, b] of ring) { cy += a; cz += b; }
+  cy /= ring.length; cz /= ring.length;
   let r = 0;
-  for (const [a, b] of ring) r = Math.max(r, Math.hypot(a, b));
+  for (const [a, b] of ring) r += Math.hypot(a - cy, b - cz);
+  r /= ring.length;
   m.scale.set(z1 - z0, r, r);
-  m.position.set((z0 + z1) / 2, 0, 0.6);
+  m.position.set((z0 + z1) / 2, -cy, cz); // three (y=-watch y, z=watch z)
   return m;
 }
 
@@ -390,10 +394,21 @@ function refreshTargets() {
   const out = new Set(removals.filter(r => r.round <= roundShown).map(r => r.part));
   for (const part of Object.keys(partMat)) _tgt[part] = out.has(part) ? targetOffset(part) : new THREE.Vector3();
 }
+// parts that the DB is holding back in the current round get a "struggle" shake
+// along their exit axis — makes the blocking verdict visible, not just the releases
+let jitterParts = new Set();
+let jitterUntil = 0;
+function startJitter() {
+  // shake the frontier: parts whose DB release round is exactly the NEXT round
+  // (i.e. the ones m_blocked() held back in the round we just finished)
+  jitterParts = new Set(removals.filter(r => r.round === roundShown + 1).map(r => r.part));
+  jitterUntil = performance.now() + 550;
+}
 async function stepOne() {
   if (roundShown >= maxRound) return;
   roundShown++;
   refreshTargets();
+  startJitter();
   setStatus(`round ${roundShown}: DB released ${removals.filter(r => r.round === roundShown).map(r => r.part).join(', ')}`);
   renderRounds(roundShown);
   if (roundShown >= maxRound) { $('b-take').disabled = true; $('b-step').disabled = true; setStatus('all 33 parts out — 8 rounds, golden table matched'); }
@@ -405,6 +420,7 @@ $('b-take').onclick = async () => {
 $('b-step').onclick = () => stepOne();
 $('b-assemble').onclick = () => {
   roundShown = 0; refreshTargets();
+  jitterParts = new Set(); jitterUntil = 0;
   renderRounds(0);
   $('b-take').disabled = false; $('b-step').disabled = false; $('b-assemble').disabled = true;
   setStatus('assembled');
@@ -506,9 +522,15 @@ function tick() {
   requestAnimationFrame(tick);
   resize();
   const k = 1 - Math.pow(0.002, 0.016);
+  const jOn = performance.now() < jitterUntil;
+  const jPh = performance.now() * 0.045;
   for (const [part, ms] of Object.entries(partMat)) {
     const t = _tgt[part];
-    if (t) for (const m of ms) m.position.lerp(t, k);
+    const r = removals.find(x => x.part === part);
+    const jAmp = (jOn && jitterParts.has(part) && r) ? 0.16 : 0;
+    const jx = jAmp ? Math.sin(jPh + part.length) * jAmp * (r.dx ? 1 : 0) : 0;
+    const jz = jAmp ? Math.sin(jPh * 1.3 + part.length) * jAmp * (r.dz ? 1 : 0) : 0;
+    if (t) for (const m of ms) { m.position.lerp(t, k); m.position.x += jx; m.position.z += jz; }
   }
   updateHands();
   controls.update();
@@ -517,6 +539,8 @@ function tick() {
 refreshTargets();
 $('b-take').disabled = false; $('b-step').disabled = false;
 setStatus('ready — 拖拽环视，点 Take apart 看 DB 逐轮拆卸');
+window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
+                 get jitter() { return { on: performance.now() < jitterUntil, parts: [...jitterParts] }; } };
 tick();
 </script>
 </body>
