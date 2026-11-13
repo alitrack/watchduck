@@ -50,6 +50,11 @@
   .boot-banner .bb-link { color:var(--acc); text-decoration:none; font-size:12px; }
   .bb-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; background:var(--acc); vertical-align:-1px; }
   .boot-banner.failed .bb-dot { background:var(--bad); }
+  /* P0-2 trace panel */
+  .trace-toggle { cursor:pointer; user-select:none; }
+  .trace-toggle:hover { color:var(--acc); }
+  .tr-chev { color:var(--dim); }
+  #t-sqltext { max-height:150px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -114,8 +119,26 @@
       <div class="row"><span>browser time</span><span class="v" id="v-wall">—</span></div>
       <div class="btns" style="margin-top:8px">
         <button id="b-run" disabled>Start</button>
-        <button id="b-reset" disabled>Reset</button>
+        <button id="b-step" disabled title="advance one 8 ms physics substep (one real SQL query) — use while paused">Step</button>
         <button id="b-map" disabled>Show collision map</button>
+        <button id="b-reset" disabled>Reset</button>
+      </div>
+    </div>
+    <div class="card" id="trace-card">
+      <h2 class="trace-toggle" id="trace-toggle">Why did it tick? <span class="tr-chev" id="trace-chev">▾</span></h2>
+      <div id="trace-body">
+        <div class="row"><span>last verdict</span><span class="v" id="t-verdict">—</span></div>
+        <div class="row"><span>statement (prepared)</span><span class="v" id="t-sql">—</span></div>
+        <div class="row"><span>bound parameters</span><span class="v" id="t-params">—</span></div>
+        <div class="row"><span>wheel / fork angle</span><span class="v" id="t-angles">—</span></div>
+        <div class="row"><span>query elapsed (performance.now)</span><span class="v" id="t-ms">—</span></div>
+        <div class="row"><span>pallet stones (same statement)</span><span class="v" id="t-stones">—</span></div>
+        <div class="sql" id="t-sqltext">—</div>
+        <div class="btns" style="margin-top:8px">
+          <button id="b-copy-sql" disabled>Copy this SQL + params</button>
+        </div>
+        <div class="hint">every 8 ms physics substep runs one real DuckDB-WASM query; this panel is a
+        ≤10 Hz view of those results. Nothing shown here is synthesized.</div>
       </div>
     </div>
     <div class="card">
@@ -731,15 +754,21 @@ function stepExplode() {
   if (balanceGroup) balanceGroup.position.z = EX_BASE.balance + explode.c.balance;
   return moving;
 }
-function render3D(fork, blocked) {
+function render3D(fork, blocked, entry, exit) {
   _lastFork = fork; _lastBlocked = blocked;
   wheelGroup.rotation.z = rad(wheel % 360);
   forkGroup.rotation.z = rad(fork);
   balanceGroup.rotation.z = rad(fork * 1.4);
-  // collision glow: driven by the SQL verdict
+  // collision glow: driven by the SQL verdict — p_frame's blocked column decides
+  // the flash; entry/exit from the SAME statement decide which stone glows
+  // (unknown or mismatched: both stones, the old conservative behaviour)
   flashLevel = blocked ? 1 : flashLevel * 0.82;
   const hot = flashLevel > 0.25;
-  for (const s of stoneMeshes) s.material = hot ? RUBY_HOT : RUBY;
+  const known = (typeof entry === 'number') && (typeof exit === 'number');
+  const eHot = hot && (!known || entry === 1 || (entry === 0 && exit === 0));
+  const xHot = hot && (!known || exit === 1 || (entry === 0 && exit === 0));
+  stoneMeshes[0].material = eHot ? RUBY_HOT : RUBY;
+  stoneMeshes[1].material = xHot ? RUBY_HOT : RUBY;
   for (const t of toothMeshes) {
     t.material.emissive.setHex(hot ? 0x552000 : 0x000000);
     t.material.emissiveIntensity = hot ? 0.8 : 0;
@@ -836,6 +865,23 @@ function failBoot(stage, err) {
   if (stageEls.bBtns) stageEls.bBtns.style.display = 'flex';
   clearInterval(stageTimer);
 }
+// P0-2: the per-frame prepared statement, kept as a string so the "Why did it tick?"
+// panel can show EXACTLY what was prepared and which parameters were bound — display
+// and execution share one source of truth. entry/exit are the two ST_Intersects terms
+// of the clash check, exposed separately so highlights and the trace can say WHICH
+// stone from the same statement (no second, different test).
+const P_FRAME_BODY = `SELECT blocked, entry, exit, (entry > 0 OR exit > 0)::DOUBLE AS clash3d
+FROM (
+  SELECT COALESCE((SELECT blocked FROM esc_map WHERE wheel_deg = $1 AND fork_deg = $2), 1) AS blocked,
+         ST_Intersects(ST_Rotate(e.wheel_g, $1 * PI() / 180.0),
+                       ST_Translate(ST_Rotate(e.entry_g, $2 * PI() / 180.0), ${PIVOT[0]}, ${PIVOT[1]}))::DOUBLE AS entry,
+         ST_Intersects(ST_Rotate(e.wheel_g, $1 * PI() / 180.0),
+                       ST_Translate(ST_Rotate(e.exit_g, $2 * PI() / 180.0), ${PIVOT[0]}, ${PIVOT[1]}))::DOUBLE AS exit
+  FROM (SELECT ST_GeomFromText('${SOLID_PARTS[0].clashWkt}') AS wheel_g,
+               ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_entry').clashWkt}') AS entry_g,
+               ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_exit').clashWkt}') AS exit_g) e
+)`;
+const P_FRAME_SQL = 'PREPARE p_frame AS\n' + P_FRAME_BODY;
 setStage('idle', 'engine not started');
 const boot = async () => {
   setStage('downloading', 'fetching the duckdb-wasm bundle from the CDN');
@@ -1108,23 +1154,14 @@ function showTakeApart(on) {
 }
 $('b-take').onclick = () => showTakeApart(!($('b-take').textContent === 'Assemble'));
   setStage('building_map', 'preparing p_frame (per-frame physics verdict)');
-// prepared per-frame query: physics verdict AND solid-profile 3D clash, ONE statement
-// blocked uses COALESCE(…,1) so a grid miss means BLOCKED (same as p_lookup:
-// an absent state never releases the wheel) — a bare subquery would yield NULL→0.
-await c.query(`PREPARE p_frame AS
-SELECT
-  COALESCE((SELECT blocked FROM esc_map WHERE wheel_deg = $1 AND fork_deg = $2), 1) AS blocked,
-  ( ST_Intersects(ST_Rotate(e.wheel_g, $1 * PI() / 180.0),
-                  ST_Translate(ST_Rotate(e.entry_g, $2 * PI() / 180.0), ${PIVOT[0]}, ${PIVOT[1]}))
-   OR ST_Intersects(ST_Rotate(e.wheel_g, $1 * PI() / 180.0),
-                    ST_Translate(ST_Rotate(e.exit_g, $2 * PI() / 180.0), ${PIVOT[0]}, ${PIVOT[1]})) )::DOUBLE AS clash3d
-FROM (SELECT ST_GeomFromText('${SOLID_PARTS[0].clashWkt}') AS wheel_g,
-             ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_entry').clashWkt}') AS entry_g,
-             ST_GeomFromText('${SOLID_PARTS.find(p => p.id === 'stone_exit').clashWkt}') AS exit_g) e`);
-setSQL(`-- map built once (${Number(mapInfo.n).toLocaleString()} ST_Intersects pairs):
+// prepared per-frame query: physics verdict, which stone, and solid-profile 3D clash —
+// ONE statement. blocked uses COALESCE(…,1) so a grid miss means BLOCKED (same as
+// p_lookup: an absent state never releases the wheel) — a bare subquery would yield NULL→0.
+await c.query(P_FRAME_SQL);
+setSQL(`-- map built once (${Number(mapInfo.n).toLocaleString()} states, 2 ST_Intersects per state):
 CREATE TABLE esc_map AS
 SELECT wi*0.25 AS wheel_deg, fi*0.5-12 AS fork_deg,
-       ST_Intersects(ST_Rotate(tooth,…), ST_Rotate(stone,…)) AS blocked
+       ST_Intersects(ST_Rotate(tooth,…), ST_Translate(ST_Rotate(stone,…))) AS blocked
 FROM wheel_angles CROSS JOIN fork_angles;
 
 -- Ep5 solids: ${solidInfo.parts.length} parts, ${solidInfo.tris.toLocaleString()} tris, built & verified in DuckDB
@@ -1132,9 +1169,10 @@ CREATE TABLE solids(part, x1..z3);  -- earcut triangle tables
 -- per part:  volume(divergence) = ST_Area(profile) × thickness
 --            open_edges = 0      → ${solidInfo.match ? 'ALL PASS' : 'CHECK HUD'}
 
--- then EVERY FRAME is this single query (physics + 3D solid clash):
-SELECT (SELECT blocked FROM esc_map WHERE …)          AS blocked,   -- physics (used)
-       ST_Intersects(wheel_solid, stone_solid …) OR … AS clash3d;   -- Ep5 solid interference`);
+-- then EVERY FRAME is this single prepared statement (physics + which stone + 3D solid clash):
+${P_FRAME_SQL}
+-- blocked: grid lookup (COALESCE → a grid miss stays blocked)
+-- entry/exit/clash3d: live ST_Intersects on the same WKT the map was built from`);
 
   // ---------- P0-3: boot complete ----------
   setStage('ready');
@@ -1151,6 +1189,13 @@ catch (e) { failBoot(window.__wdBootState || 'downloading', e); }
 const fmt = v => (Math.round(v * 4) / 4).toFixed(2);
 // window.__wd (with the live c connection) is set inside boot()
 let wheel = 0, beats = 0, running = false, showMap = false;
+// P0-2 trace: runId = one per Start, step = the frame counter; records below carry
+// runId / step / sqlName / params / blocked / entry / exit / elapsedMs — all from the
+// real query result, never synthesized.
+let runId = 0;
+let lastTrace = null;
+let traceBuf = [];
+let lastTraceDraw = 0;
 let freeFrames = 0, frames = 0, lastT = 0;
 let _lastFork = 0, _lastBlocked = false;
 // diagnostic snapshot for injected scripts (module-scope lets are not on window)
@@ -1166,6 +1211,7 @@ window.__wd3d = () => ({
   solid: (typeof solidInfo !== 'undefined') ? solidInfo : null,
   solidVisible: (typeof SOLID_PARTS !== 'undefined' && SOLID_PARTS[0]) ? SOLID_PARTS[0].overlay.visible : null,
   clash3d: (typeof _clash3d !== 'undefined') ? _clash3d : null,
+  trace: (typeof lastTrace !== 'undefined') ? lastTrace : null,
 });
 
 // ---------- tick sound (tiny WebAudio click, unlocked by the Start click) ----------
@@ -1186,17 +1232,37 @@ async function physicsStep(vSec) {
   // ONE physical question to the database, at virtual time vSec.
   const ph = (vSec * BEAT_HZ) % 1.0;
   const fork = A * (4 * Math.abs(ph - 0.5) - 1);
-  // one statement, two verdicts: physics (blocked) + Ep5 solid-profile clash
-  // quantize to the ESC_MAP grid (wheel 0.25°, fork 0.5°) — a sub-step that
-  // rounds off-grid misses the table and COALESCE would force blocked=1
+  // one statement, several verdicts: physics (blocked) + which stone (entry/exit)
+  // + Ep5 solid-profile clash. Quantize to the ESC_MAP grid (wheel 0.25°, fork 0.5°)
+  // — a sub-step that rounds off-grid misses the table and COALESCE would force blocked=1
   const wq = Math.round((wheel % PITCH) * 4) / 4;
   const fq = Math.round(fork / 0.5) * 0.5;
+  const t0 = performance.now();   // real measurement, same clock the load stages use
   const res = await c.query(`EXECUTE p_frame(${wq.toFixed(2)}, ${fq.toFixed(1)})`);
+  const elapsedMs = performance.now() - t0;
   frames++;
   const row0 = res.toArray()[0];
   const blocked = row0 ? Number(row0.blocked) !== 0 : true;   // absent state = blocked
   _clash3d = row0 ? Number(row0.clash3d) !== 0 : false;      // solid-model cross-check
   if (_clash3d !== blocked) console.warn('[watchduck] 3D solid verdict diverged from physics map', { wheel: wheel % PITCH, fork, blocked, clash3d: _clash3d });
+  const entry = row0 ? Number(row0.entry) : 1;   // conservative default if the row is missing
+  const exit = row0 ? Number(row0.exit) : 1;
+  // P0-2 trace record: every field below comes from THIS query — no synthesized values.
+  lastTrace = {
+    runId, step: frames, sqlName: 'p_frame',
+    params: { wheel_deg: wq, fork_deg: fq },
+    blocked: blocked ? 1 : 0, entry, exit, clash3d: _clash3d ? 1 : 0,
+    elapsedMs: Math.round(elapsedMs * 100) / 100,
+    wheelDeg: Math.round((wheel % PITCH) * 100) / 100,
+    forkDeg: Math.round(fork * 100) / 100,
+    at: Date.now(),
+  };
+  traceBuf.push(lastTrace);
+  if (traceBuf.length > 512) traceBuf.shift();
+  // the trace panel is a downsampled view: refresh at ≤10 Hz. The queries themselves
+  // still run at full cadence — low UI sampling never reduces solver executions.
+  const now = performance.now();
+  if (now - lastTraceDraw >= 100) { lastTraceDraw = now; drawTrace(); }
   const DT = 0.008;
   if (!blocked) {
     // a real escape wheel snaps through its release almost instantly
@@ -1208,7 +1274,69 @@ async function physicsStep(vSec) {
   vc.textContent = _clash3d ? 'CLASH (solid ∩ solid)' : 'clear';
   vc.classList.remove('ok', 'err');
   vc.classList.add(_clash3d ? 'err' : 'ok');
-  return { fork, blocked };
+  return { fork, blocked, entry, exit };
+}
+
+// ---------- P0-2: "Why did it tick?" trace panel (a view of real query results) ----------
+function drawTrace() {
+  const t = lastTrace;
+  const v = $('t-verdict');
+  if (!t) {
+    v.textContent = '—'; v.className = 'v';
+    $('t-sql').textContent = '—'; $('t-params').textContent = '—';
+    $('t-angles').textContent = '—'; $('t-ms').textContent = '—';
+    $('t-stones').textContent = '—'; $('t-sqltext').textContent = '—';
+    return;
+  }
+  if (t.blocked) { v.textContent = '▲ COLLISION — blocked = 1'; v.className = 'v err'; }
+  else { v.textContent = '○ FREE — blocked = 0'; v.className = 'v ok'; }
+  $('t-sql').textContent = t.sqlName;
+  $('t-params').textContent = `$1 wheel = ${t.params.wheel_deg}° · $2 fork = ${t.params.fork_deg}°`;
+  $('t-angles').textContent = `wheel ${t.wheelDeg.toFixed(2)}° · fork ${t.forkDeg.toFixed(2)}°`;
+  $('t-ms').textContent = t.elapsedMs + ' ms';
+  const s = $('t-stones');
+  if (t.blocked) {
+    if (t.entry === 1 && t.exit === 1) s.textContent = 'entry = 1 · exit = 1 (both stones in contact)';
+    else if (t.entry === 1) s.textContent = 'entry = 1 · exit = 0 (entry stone is the contact)';
+    else if (t.exit === 1) s.textContent = 'entry = 0 · exit = 1 (exit stone is the contact)';
+    else s.textContent = 'collision holds, stone not distinguished (live test: none — see console)';
+    s.className = 'v err';
+  } else {
+    s.textContent = 'entry = 0 · exit = 0 — no contact';
+    s.className = 'v ok';
+  }
+  $('b-copy-sql').disabled = !t;
+  $('t-sqltext').textContent =
+    P_FRAME_BODY +
+    `\n-- bound: $1 = ${t.params.wheel_deg}, $2 = ${t.params.fork_deg}` +
+    `\n-- result: blocked=${t.blocked}  entry=${t.entry}  exit=${t.exit}  clash3d=${t.clash3d}  (${t.elapsedMs} ms, performance.now)`;
+}
+async function copyTraceSQL(t) {
+  const btn = $('b-copy-sql');
+  const txt =
+    `-- watchduck 3D · SQL trace · run ${t.runId} · step ${t.step} · ${new Date(t.at).toISOString()}\n` +
+    P_FRAME_SQL + '\n' +
+    `-- bound parameters: wheel_deg = ${t.params.wheel_deg}, fork_deg = ${t.params.fork_deg}\n` +
+    `EXECUTE p_frame(${t.params.wheel_deg}, ${t.params.fork_deg});\n` +
+    `-- actual result: blocked=${t.blocked}  entry=${t.entry}  exit=${t.exit}  clash3d=${t.clash3d}  elapsed=${t.elapsedMs} ms (performance.now)`;
+  let okCopy = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+      okCopy = true;
+    }
+  } catch (e) { okCopy = false; }
+  if (!okCopy) {   // non-secure context fallback
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      okCopy = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e2) { okCopy = false; }
+  }
+  btn.textContent = okCopy ? 'copied ✓' : 'copy failed';
+  setTimeout(() => { btn.textContent = 'Copy this SQL + params'; }, 1200);
 }
 let _lastBeatWheel = 0, _dpbHist = [];
 function updateHud(tSec) {
@@ -1258,11 +1386,22 @@ function spin() {
 }
 spin();
 
+// P0-2: handlers attach here; the buttons only get enabled at the end of boot(),
+// so if the engine failed they stay inert.
 $('b-run').onclick = () => {
   if (!actx) { try { actx = new AudioContext(); } catch (e) {} }
   running = !running;
+  if (running) runId = (runId || 0) + 1;   // each Start begins a new trace run
   $('b-run').textContent = running ? 'Pause' : 'Start';
   if (running) { lastRender = null; loop(); }
+};
+// one 8 ms physics substep at a time (while paused) — one real p_frame query
+$('b-step').onclick = async () => {
+  if (running) return;
+  const last = await physicsStep(vClock);
+  vClock += 0.008;
+  updateHud(vClock);
+  render3D(last.fork, last.blocked, last.entry, last.exit);
 };
 $('b-reset').onclick = () => {
   wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;
@@ -1272,7 +1411,18 @@ $('b-reset').onclick = () => {
  $('v-wall').textContent = '—';
  { const vc = $('v-clash'); vc.textContent = 'idle'; vc.classList.remove('ok', 'err'); }
  _clash3d = false;
+ lastTrace = null; lastTraceDraw = 0;
+ drawTrace();
+ $('b-copy-sql').disabled = true;
  render3D(0, false);
+};
+$('b-copy-sql').onclick = () => { if (lastTrace) copyTraceSQL(lastTrace); };
+// the trace panel collapses via its header
+$('trace-toggle').onclick = () => {
+  const tb = $('trace-body');
+  const open = tb.style.display !== 'none';
+  tb.style.display = open ? 'none' : 'block';
+  $('trace-chev').textContent = open ? '▸' : '▾';
 };
 render3D(0, false);
 </script>
