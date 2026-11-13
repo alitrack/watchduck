@@ -86,6 +86,14 @@
     border-radius:10px; padding:10px 14px; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
   #diag-details > summary::-webkit-details-marker { display:none; }
   #diag-details > summary:hover { color:var(--acc); border-color:var(--acc); }
+  /* P2-2: nested Performance / Engine Diagnostics panel */
+  details#perf-details { display:flex; flex-direction:column; gap:12px; }
+  #perf-details > summary { list-style:none; cursor:pointer; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:10px 14px; font-size:12px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:1px; font-weight:600; }
+  #perf-details > summary::-webkit-details-marker { display:none; }
+  #perf-details > summary:hover { color:var(--acc); border-color:var(--acc); }
+  .d-stages { font-size:12px; line-height:1.8; }
   /* P1: Break-the-Watch experiment card (one real geometric parameter) */
   details#exp-details > summary { list-style:none; cursor:pointer; font-size:12px; color:var(--dim);
     text-transform:uppercase; letter-spacing:1px; font-weight:600; margin-bottom:8px; user-select:none; }
@@ -263,6 +271,42 @@
       <h2>The SQL doing the physics right now</h2>
       <div class="sql" id="sql-view">—</div>
     </div>
+    <!-- P2-2: Performance / Engine Diagnostics. Every figure below is a real
+         measurement from this tab (performance.now / rAF / the live query
+         buffer); anything not measurable in the browser (e.g. CDN download
+         bytes) is shown as "not measured" instead of a number. The update
+         interval only runs while this panel is open — closed = zero work. -->
+    <details id="perf-details">
+      <summary>Performance / Engine Diagnostics — real measurements</summary>
+      <div class="card">
+        <h2>Engine</h2>
+        <div class="row"><span>duckdb (engine version)</span><span class="v" id="d-duck">not measured</span></div>
+        <div class="row"><span>spatial extension</span><span class="v" id="d-spatial">not measured</span></div>
+        <div class="row"><span>collision map build</span><span class="v" id="d-mapms">not measured</span></div>
+        <div class="row"><span>states / blocked</span><span class="v" id="d-mapstat">—</span></div>
+      </div>
+      <div class="card">
+        <h2>Load stages (this boot — performance.now, each timed separately)</h2>
+        <div id="d-stages" class="d-stages">not measured</div>
+        <div class="hint">download → instantiate → spatial → build are shown as separate numbers and are
+        never summed into one "SQL time". The CDN reports no byte counts, so the
+        download size itself is not measured (first load is the ~40 MB DuckDB-WASM
+        bundle + spatial, cached afterwards).</div>
+      </div>
+      <div class="card">
+        <h2>Live rates</h2>
+        <div class="row"><span>SQL query latency p50</span><span class="v" id="d-p50">not measured</span></div>
+        <div class="row"><span>SQL query latency p95</span><span class="v" id="d-p95">not measured</span></div>
+        <div class="row"><span>latency samples (rolling window)</span><span class="v" id="d-latn">0</span></div>
+        <div class="row"><span>render frame rate (rAF)</span><span class="v" id="d-fps">not measured</span></div>
+        <div class="row"><span>query frequency (virtual clock)</span><span class="v" id="d-qrate">125 / s (8 ms substeps)</span></div>
+        <div class="hint">two different clocks: the query frequency is fixed by the 8 ms virtual physics substep
+        (125 queries/s while the sim runs at 1×), while the frame rate is measured from
+        requestAnimationFrame intervals in this tab. On a slow machine one query can
+        span several frames — the two numbers are not interchangeable.</div>
+        <div class="btns" style="margin-top:8px"><button id="d-copy" disabled>Copy diagnostics</button></div>
+      </div>
+    </details>
     <div class="card">
       <h2>What SQL computes vs what Three.js draws</h2>
       <div style="font-size:12px;line-height:1.7">
@@ -987,9 +1031,21 @@ const stageEls = {
   bMs: $('bb-elapsed'), bErr: $('bb-err'), bBtns: $('bb-btns'),
 };
 const STAGE_T0 = {};
+// P2-2: per-stage wall times. Each transition closes the previous entry and
+// opens a new one, so the diagnostics panel can show every boot stage as a
+// SEPARATE number (download / instantiate / spatial / map+solids) — they are
+// never summed up and labelled "SQL time".
+const STAGE_LOG = [];
+let _stageCur = null;
+function closeStageLog() { if (_stageCur) _stageCur.t1 = performance.now(); }
 function setStage(stage, detail) {
+  const now = performance.now();
+  // entries live in STAGE_LOG from creation; a transition only stamps t1 on the
+  // already-stored object (pushing again would duplicate every row)
+  if (_stageCur && _stageCur.stage !== stage) { _stageCur.t1 = now; _stageCur = null; }
+  if (!_stageCur) { _stageCur = { stage, t0: now }; STAGE_LOG.push(_stageCur); }
   window.__wdBootState = stage;
-  if (!STAGE_T0[stage]) STAGE_T0[stage] = performance.now();
+  if (!STAGE_T0[stage]) STAGE_T0[stage] = now;
   if (stageEls.state) stageEls.state.textContent = stage;
   if (stageEls.stage) stageEls.stage.textContent = stage;
     if (stageEls.banner) {
@@ -1024,6 +1080,7 @@ function failBoot(stage, err) {
   }
   if (stageEls.bBtns) stageEls.bBtns.style.display = 'flex';
   clearInterval(stageTimer);
+  closeStageLog();
 }
 // P0-2: the per-frame prepared statement, kept as a string so the "Why did it tick?"
 // panel can show EXACTLY what was prepared and which parameters were bound — display
@@ -1074,6 +1131,7 @@ const N_STALL = 40;            // P1-3: "stalled" threshold (documented in the c
 let expCap = { baseline: null, modified: null };   // P1-3: saved real evidence
 let lastProbe = null;          // P1-3: result of the last beat probe
 let currentMapStats = null;    // P1-3: the stats of the esc_map currently in force
+let lastMapBuildMs = null;      // P2-2: real wall time of the most recent buildEscMap()
 
 const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(2) + ' mm';
 const fmtMap = m => `${Number(m.n).toLocaleString()} states (${Number(m.blocked).toLocaleString()} blocked) / ${m.ms} ms` +
@@ -1120,9 +1178,11 @@ async function buildEscMap(off) {
   const map = new Map();
   for (const r of rows) map.set(Number(r.wheel_deg) + '|' + Number(r.fork_deg), Number(r.blocked));
   currentMapStats = { off, n: Number(info.n), blocked: Number(info.b), lock0: Number(lock0row.l) };
+  const ms = Math.round(performance.now() - t0);
+  lastMapBuildMs = ms;   // P2-2: real measurement (CREATE OR REPLACE esc_map + the stats queries above)
   return { off, n: Number(info.n), blocked: Number(info.b), free: Number(info.n) - Number(info.b),
            lock0: Number(lock0row.l), deadCols: Number(deadrow.d), map,
-           ms: Math.round(performance.now() - t0) };
+           ms };
 }
 
 // P1-2: re-derive EVERY representation of the entry stone from entryOff — the
@@ -1743,6 +1803,7 @@ setSQL(sqlViewText(mapRes));
   // ---------- P0-3: boot complete ----------
   setStage('ready');
   clearInterval(stageTimer);
+  closeStageLog();   // P2-2: 'ready' is the terminal stage — close its log entry
   $('b-run').disabled = false; $('b-step').disabled = false; $('b-reset').disabled = false;
   $('b-map').disabled = false;
   $('b-solid').disabled = false; $('b-take').disabled = false;
@@ -1791,6 +1852,14 @@ window.__wd3d = () => ({
   expCap: (typeof expCap !== 'undefined') ? expCap : null,
   lastProbe: (typeof lastProbe !== 'undefined') ? lastProbe : null,
   entryStoneCenter: (typeof entryCenter !== 'undefined') ? entryCenter(entryOff) : null,
+  // P2-2: the diagnostics panel's data sources, for external verification
+  perf: (typeof duckVer !== 'undefined') ? {
+    duckVer, lastMapBuildMs,
+    stageLog: (typeof STAGE_LOG !== 'undefined') ? STAGE_LOG.slice() : [],
+    latency: (typeof sqlLatencyStats === 'function') ? sqlLatencyStats() : null,
+    fps: (typeof renderFpsStats === 'function') ? renderFpsStats() : null,
+    timerActive: (typeof perfTimer !== 'undefined') ? !!perfTimer : null,
+  } : null,
 });
 
 // ---------- tick sound (tiny WebAudio click, unlocked by the Start click) ----------
@@ -1920,6 +1989,96 @@ async function copyTraceSQL(t) {
   btn.textContent = okCopy ? 'copied ✓' : 'copy failed';
   setTimeout(() => { btn.textContent = 'Copy this SQL + params'; }, 1200);
 }
+// ---------- P2-2: Performance / Engine Diagnostics (real measurements only) ----------
+// p50/p95 come from the rolling traceBuf (the last ≤512 real p_frame queries);
+// the frame rate from the rAF interval ring; everything else from the boot
+// records above. Untmeasurable values (no samples yet, CDN bytes, …) show
+// "not measured" — this panel never invents a number.
+const UNMEAS = 'not measured';
+function pct(sorted, p) {
+  if (!sorted.length) return null;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+function sqlLatencyStats() {
+  if (!traceBuf.length) return null;
+  const a = traceBuf.map(t => t.elapsedMs).sort((x, y) => x - y);
+  return { n: a.length, p50: pct(a, 0.5), p95: pct(a, 0.95), max: a[a.length - 1] };
+}
+function renderFpsStats() {
+  if (rafIntervals.length < 10) return null;
+  const a = rafIntervals.slice().sort((x, y) => x - y);
+  const med = pct(a, 0.5);
+  return { n: a.length, fps: 1000 / med, medMs: med };
+}
+const perfDetails = $('perf-details');
+let perfTimer = null;   // only alive while the panel is open (closed = zero work)
+function perfTick() {
+  const set = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
+  set('d-duck', duckVer || UNMEAS);
+  const ext = $('v-ext').textContent;
+  set('d-spatial', ext && ext !== '—' ? ext : UNMEAS);
+  set('d-mapms', lastMapBuildMs === null ? UNMEAS :
+    lastMapBuildMs + ' ms' + (currentMapStats && Number(currentMapStats.off) !== 0 ? ` (off ${fmtOff(currentMapStats.off)})` : ' (baseline)'));
+  set('d-mapstat', currentMapStats ? `${Number(currentMapStats.n).toLocaleString()} / ${Number(currentMapStats.blocked).toLocaleString()}` : '—');
+  const stages = STAGE_LOG.map(en => {
+    const dur = en.t1 ? (en.t1 - en.t0) / 1000 : null;
+    return `${en.stage} ${dur === null ? '(in progress)' : dur.toFixed(1) + ' s'}`;
+  });
+  const total = STAGE_LOG.length ? (performance.now() - STAGE_LOG[0].t0) / 1000 : null;
+  set('d-stages', stages.length ? stages.join('  →  ') + (total !== null ? `  — boot wall total ${total.toFixed(1)} s` : '') : UNMEAS);
+  const lat = sqlLatencyStats();
+  set('d-p50', lat ? lat.p50.toFixed(2) + ' ms' : 'not measured (0 samples)');
+  set('d-p95', lat ? lat.p95.toFixed(2) + ' ms' : 'not measured (0 samples)');
+  set('d-latn', (lat ? lat.n : 0) + ' of the last 512 p_frame queries');
+  const fps = renderFpsStats();
+  set('d-fps', fps ? fps.fps.toFixed(1) + ' fps (median ' + fps.medMs.toFixed(1) + ' ms, n=' + fps.n + ')' : 'not measured');
+  set('d-qrate', (running ? '125 / s (8 ms substeps, sim running)' : '0 (sim paused) — virtual 8 ms substeps, 125/s at 1× speed'));
+  $('d-copy').disabled = !(duckVer || lastMapBuildMs !== null || (lat && lat.n) || STAGE_LOG.length);
+}
+function perfSetOpen(open) {
+  if (open) { perfTick(); if (!perfTimer) perfTimer = setInterval(perfTick, 500); }
+  else if (perfTimer) { clearInterval(perfTimer); perfTimer = null; }
+}
+perfDetails.addEventListener('toggle', () => perfSetOpen(perfDetails.open));
+$('d-copy').onclick = async () => {
+  const lat = sqlLatencyStats();
+  const fps = renderFpsStats();
+  const stages = STAGE_LOG.map(en => en.stage + '=' + (en.t1 ? ((en.t1 - en.t0) / 1000).toFixed(2) + 's' : 'in-progress')).join(' ');
+  const txt =
+    `watchduck 3D · engine diagnostics (all values measured in this browser tab)\n` +
+    `duckdb engine: ${duckVer || 'not measured'}\n` +
+    `spatial extension: ${$('v-ext').textContent === '—' ? 'not measured' : $('v-ext').textContent}\n` +
+    `load stages: ${stages || 'not measured'}\n` +
+    `collision map build: ${lastMapBuildMs === null ? 'not measured' : lastMapBuildMs + ' ms'}\n` +
+    `map: ${currentMapStats ? Number(currentMapStats.n).toLocaleString() + ' states, ' + Number(currentMapStats.blocked).toLocaleString() + ' blocked, off ' + fmtOff(Number(currentMapStats.off)) : 'not measured'}\n` +
+    `sql query latency: ${lat ? 'p50=' + lat.p50.toFixed(2) + 'ms p95=' + lat.p95.toFixed(2) + 'ms max=' + lat.max + 'ms n=' + lat.n + ' (rolling 512 window)' : 'not measured (0 samples)'}\n` +
+    `render fps: ${fps ? fps.fps.toFixed(1) + ' (median interval ' + fps.medMs.toFixed(1) + ' ms, n=' + fps.n + ')' : 'not measured'}\n` +
+    `query frequency: 125/s virtual (8 ms substeps) — a different clock than render fps\n` +
+    `download size: not measured (CDN reports no bytes; first load ≈ 40 MB, cached after)\n` +
+    `captured: ${new Date().toISOString()}`;
+  const btn = $('d-copy');
+  let okCopy = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+      okCopy = true;
+    }
+  } catch (e) { okCopy = false; }
+  if (!okCopy) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      okCopy = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e2) { okCopy = false; }
+  }
+  btn.textContent = okCopy ? 'copied ✓' : 'copy failed';
+  setTimeout(() => { btn.textContent = 'Copy diagnostics'; }, 1200);
+};
+
 let _lastBeatWheel = 0, _dpbHist = [];
 function updateHud(tSec) {
   const newBeats = Math.floor(tSec * BEAT_HZ);
@@ -1941,6 +2100,12 @@ function updateHud(tSec) {
 
 // ---------- main loop: virtual-clock physics substeps (each one SQL query) ----------
 let vClock = 0, lastRender = null;
+// P2-2: render-frame timing. A ring buffer of the last 256 requestAnimationFrame
+// wall intervals (ms) feeds the diagnostics panel. This is the RENDER clock —
+// deliberately kept separate from the query frequency, which is set by the
+// virtual 8 ms physics substep and does not depend on the display refresh.
+let _rafPrev = 0;
+const rafIntervals = [];
 async function loop() {
   if (!running) return;
   const now = performance.now();
@@ -1960,6 +2125,15 @@ async function loop() {
 }
 // idle 3D animation runs always so the watch looks alive even before Start
 function spin() {
+  const now = performance.now();
+  if (_rafPrev) {
+    const d = now - _rafPrev;
+    if (d > 0.2 && d < 1000) {   // drop first frame + tab-suspend outliers
+      rafIntervals.push(d);
+      if (rafIntervals.length > 256) rafIntervals.shift();
+    }
+  }
+  _rafPrev = now;
   controls.update();
   updateHands();                 // dial always shows real current time
   stepExplode();
