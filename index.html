@@ -1,13 +1,17 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>watchduck — 用 SQL 算出来的钟</title>
+<title>watchduck — clocks computed with SQL</title>
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#dfe4ec; --dim:#8b93a3; --acc:#4fc3f7; --gold:#c9a557; }
   * { box-sizing:border-box; }
   body { margin:0; font-family: ui-monospace,"SF Mono",Menlo,Consolas,monospace; background:var(--bg); color:var(--txt); }
+  .wdbar { display:flex; align-items:center; gap:4px; padding:10px 22px 0; flex-wrap:wrap; }
+  .wdbar .lbl { color:var(--dim); font-size:11px; margin-right:8px; letter-spacing:1px; }
+  .wdbar .wdb { font-size:11.5px; color:var(--dim); text-decoration:none; padding:4px 10px; border:1px solid transparent; border-radius:6px; }
+  .wdbar .wdb:hover { color:var(--acc); border-color:var(--line); }
   header { padding:26px 28px 12px; border-bottom:1px solid var(--line); }
   h1 { font-size:22px; margin:0 0 6px; letter-spacing:.5px; }
   h1 .accent { color:var(--acc); }
@@ -25,51 +29,54 @@
   footer { color:var(--dim); font-size:11.5px; padding:0 28px 30px; line-height:1.7; }
   footer a { color:var(--acc); text-decoration:none; }
   code { background:#0b0d11; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:11px; }
-  .wdbar { display:flex; align-items:center; gap:4px; padding:10px 22px 0; flex-wrap:wrap; }
-  .wdbar .lbl { color:var(--dim); font-size:11px; margin-right:8px; letter-spacing:1px; }
-  .wdbar .wdb { font-size:11.5px; color:var(--dim); text-decoration:none; padding:4px 10px; border:1px solid transparent; border-radius:6px; }
-  .wdbar .wdb:hover { color:var(--acc); border-color:var(--line); }
 </style>
 </head>
 <body>
-<header>
 <nav class="wdbar"><span class="lbl">watchduck</span>
-  <a class="wdb" href="index.html">首页</a>
-  <a class="wdb" href="index34.html">34 件全机芯</a>
-  <a class="wdb" href="escapement3d.html">3D 擒纵组</a>
-  <a class="wdb" href="index2d.html">2D 工程视图</a></nav>
-  <h1>watchduck <span class="accent">// 用 SQL 算出来的钟</span></h1>
+  <a class="wdb" href="index.html">Home</a>
+  <a class="wdb" href="index34.html">34-part movement</a>
+  <a class="wdb" href="escapement3d.html">3D escapement</a>
+  <a class="wdb" href="index2d.html">2D view</a></nav>
+<header>
+  <h1>watchduck <span class="accent">// clocks computed with SQL</span></h1>
   <div class="sub">
-    零件是 <b>DuckDB 里的多边形</b>：碰撞 = <code>ST_Intersects</code> 逐对判决，走时 = 递归 SQL 求解器，
-    拆卸 = <code>m_blocked()</code> 逐轮问数据库"现在谁走得掉"。没有物理引擎——<b>每一帧都是一条 SQL</b>，在浏览器 DuckDB-WASM 里跑。
+    The parts are <b>polygons in DuckDB</b>: collisions = <code>ST_Intersects</code> pairwise verdicts,
+    ticking = a recursive SQL solver, disassembly = <code>m_blocked()</code> asking the database
+    "who can move right now?" tick by tick. No physics engine — <b>every frame is a SQL query</b>,
+    running in DuckDB-WASM in your browser.
   </div>
 </header>
 <div class="cards">
   <a class="card" href="index34.html">
-    <div class="t"><span class="n">34 件</span>Ep5 全机芯 · 3D 拆卸</div>
-    <div class="d">完整 34 零件 / 107 件机芯（主夹板、四块夹板、轮系、发条盒、拨链器、表盘表针、表杆）3D 渲染。
-      点 <b>Take apart</b>：拆卸循环在浏览器 DuckDB-WASM 里逐轮跑 <b>8 轮 SQL 判决</b>，与黄金表逐轮一致。
-      点零件看身份 / 被谁挡着，零件沿 DB 给的退出轴径向散开。</div>
-    <div class="go">进入 → 首次加载约 40 MB 引擎</div>
+    <div class="t"><span class="n">34 parts</span>Ep5 full movement · 3D take-apart</div>
+    <div class="d">The complete 34-part / 107-piece calibre (mainplate, four bridges, going train,
+      barrel + mainspring, keyless works, dial and hands, stem) in 3D. Hit <b>Take apart</b>:
+      the disassembly loop runs <b>8 rounds of SQL verdicts</b> live in DuckDB-WASM, matching the
+      golden table round for round. Click a part for its identity and its blockers; parts fly out
+      radially along the exit axis the DB assigns.</div>
+    <div class="go">Open → first load ~40 MB engine</div>
   </a>
   <a class="card" href="escapement3d.html">
-    <div class="t"><span class="n">3D</span>擒纵组 · 实时走时</div>
-    <div class="d">Swiss lever 擒纵组的 3D 视图：金属擒纵轮、红宝石叉石、摆轮游丝、真实时间走针。
-      ~7.9 万次 <b>ST_Intersects</b> 现场建碰撞表，递归 SQL 逐 tick 求解——<b>12°/拍 是算出来的，不是写死的</b>。
-      碰撞时叉石转红发光，由 SQL 判决驱动。</div>
-    <div class="go">进入 →</div>
+    <div class="t"><span class="n">3D</span>Escapement · live ticking</div>
+    <div class="d">A Swiss lever escapement in 3D: solid metal escape wheel, ruby pallet stones,
+      balance + hairspring, hands showing real time. ~79k <b>ST_Intersects</b> build the collision
+      map live, a recursive SQL solver walks it tick by tick — the <b>12°/beat emerges from the
+      shapes; nothing in the code says 12°</b>. Stones glow red on collision, driven by the SQL
+      verdict, not the renderer.</div>
+    <div class="go">Open →</div>
   </a>
   <a class="card" href="index2d.html">
-    <div class="t"><span class="n">2D</span>工程视图 · 碰撞表</div>
-    <div class="d">同一套引擎的 2D 正交视图：轮齿与叉石的轮廓直接可见，碰撞态在图上标红。
-      适合看"SQL 到底在算什么"——每帧的 <code>p_frame</code> 判决与图形逐一对应。</div>
-    <div class="go">进入 →</div>
+    <div class="t"><span class="n">2D</span>Engineering view · collision map</div>
+    <div class="d">The same engine in orthographic 2D: tooth and stone outlines directly visible,
+      collision states marked on the drawing. The best way to see "what the SQL is actually doing"
+      — every <code>p_frame</code> verdict corresponds to the picture.</div>
+    <div class="go">Open →</div>
   </a>
 </div>
 <footer>
-  仓库 <a href="https://github.com/alitrack/watchduck">github.com/alitrack/watchduck</a> ·
-  方法论上游 <a href="https://github.com/sqlartist/watchmaker-sql">sqlartist/watchmaker-sql (Ep5)</a> ·
-  引擎 = 静态 HTML + CDN 的 Three.js / duckdb-wasm，无构建、无后端。
+  Repo <a href="https://github.com/alitrack/watchduck">github.com/alitrack/watchduck</a> ·
+  Methodology upstream <a href="https://github.com/sqlartist/watchmaker-sql">sqlartist/watchmaker-sql (Ep5)</a> ·
+  Engine = static HTML + CDN Three.js / duckdb-wasm. No build step, no backend.
 </footer>
 </body>
 </html>
