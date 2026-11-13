@@ -17,9 +17,9 @@
   h1 .tag { color:var(--gold); font-size:12px; margin-left:8px; }
   .sub { color:var(--dim); font-size:12px; line-height:1.5; max-width:960px; }
   main { display:flex; flex-wrap:wrap; gap:14px; padding:14px 22px 28px; }
-  .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; flex:1 1 auto; min-width:320px; position:relative; }
+  .canvas-wrap { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; flex:1 1 auto; min-width:280px; position:relative; }
   #scene { display:block; width:100%; height:calc(100vh - 190px); min-height:480px; background:#0b0d11; border-radius:8px; }
-  aside { width:320px; flex:0 0 320px; display:flex; flex-direction:column; gap:10px; }
+  aside { width:300px; flex:0 0 300px; display:flex; flex-direction:column; gap:10px; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
   .card h3 { margin:0 0 8px; font-size:12px; letter-spacing:1px; color:var(--dim); text-transform:uppercase; font-weight:600; }
   .row { display:flex; justify-content:space-between; align-items:baseline; gap:8px; padding:2px 0; font-size:12.5px; }
@@ -39,7 +39,7 @@
   #status { font-size:11.5px; color:var(--dim); min-height:16px; margin-top:6px; }
   .legend { font-size:11px; color:var(--dim); line-height:1.7; }
   .legend b { color:var(--txt); font-weight:600; }
-  @media (max-width:900px) { aside { width:100%; flex:1 1 auto; } #scene { height:60vh; } }
+  @media (max-width:700px) { aside { width:100%; flex:1 1 auto; } #scene { height:60vh; } }
   #pickcard { position:absolute; left:16px; bottom:16px; background:rgba(23,26,33,.94); border:1px solid var(--line);
     border-radius:8px; padding:8px 12px; font-size:12px; max-width:260px; display:none; pointer-events:none; z-index:5; }
   #pickcard .nm { color:var(--acc); font-weight:700; font-size:13px; }
@@ -114,7 +114,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as duckdb from 'duckdb-wasm';
 
 const $ = id => document.getElementById(id);
-const BUILD_ID = '20261113-flipfix-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
+const BUILD_ID = '20261113-layout700-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
 const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
 window.__PE = [];
 addEventListener('error', e => { window.__PE.push(e.message); });
