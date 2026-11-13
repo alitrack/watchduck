@@ -91,10 +91,10 @@
     <span class="badge">RECORDED PREVIEW</span>
     <div class="frame">
       <img src="assets/preview-poster.png"
-           alt="Recorded 3D escapement preview — currently a labelled placeholder until the real recorded screenshot is placed at assets/preview-poster.png"
+           alt="Recorded still from the live 3D SQL simulation — the watch mid-tick with the trace sidebar visible"
            onerror="this.style.display='none'; this.nextElementSibling.style.display='block'">
-      <div class="ph">poster file missing — the real recorded screenshot goes to
-        <b>assets/preview-poster.png</b> (coordinator places it; see docs/showcase/qa.md)</div>
+      <div class="ph">preview image unavailable — open the
+        <b>live SQL simulation</b> instead (link below)</div>
     </div>
     <figcaption>
       <b>Recorded preview, not live SQL.</b> A still from the real 3D demo — the simulation
@@ -128,7 +128,7 @@
     <div class="t"><span class="n">3D</span>Escapement · live ticking</div>
     <div class="d">A Swiss lever escapement in 3D: solid metal escape wheel, ruby pallet stones,
       balance + hairspring, hands showing real time. A <b>4,753-state collision map</b>
-      (97 × 49 wheel-phase × fork-angle grid, every cell one <code>ST_Intersects</code>
+      (97 × 49 wheel-phase × fork-angle grid, one verdict per cell from 2 <code>ST_Intersects</code>
       verdict) is built live in SQL; one prepared query per frame decides whether the wheel
       moves — <b>the degrees-per-beat falls out of the shapes; nothing in the code says a
       fixed angle</b>. Stones glow red on collision, driven by the SQL verdict, not the renderer.</div>

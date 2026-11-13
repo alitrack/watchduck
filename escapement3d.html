@@ -90,7 +90,7 @@
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser — 3D</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
   DuckDB-WASM asks <b>do these shapes overlap?</b> on a 97 × 49 wheel-phase × fork-angle grid
-  (4,753 states, each cell one ST_Intersects verdict) to build the collision map,
+  (4,753 states — one verdict per cell, each from 2 ST_Intersects) to build the collision map,
   then one prepared SQL query per frame walks the map tick by tick. No physics engine — just SQL. The 3D is pure
   presentation — <b>DuckDB still decides every tick</b> — nothing in the code says “12° per beat”; that number
   falls out of the shapes. Drag to orbit, scroll to zoom — flip it over to see the dial and hands on the other side.</div>
@@ -223,7 +223,9 @@ window.__wdBootState = 'idle';
   if (retry) retry.onclick = function () { location.reload(); };
   setTimeout(function () {
     var s = window.__wdBootState;
-    if (s === 'ready' || s === 'failed') return;
+    if (s !== 'idle') return;   // module started: its own stage machine (with stage
+                                // + elapsed) reports progress or failure — a slow but
+                                // alive download/instantiate is NOT a failure here.
     var banner = document.getElementById('boot-banner');
     if (!banner) return;
     banner.classList.add('failed');
@@ -232,9 +234,8 @@ window.__wdBootState = 'idle';
     if (st) st.textContent = 'engine failed';
     var err = document.getElementById('bb-err');
     if (err) {
-      err.textContent = 'The engine never reached a ready state' +
-        (s === 'idle' ? ' — it stopped before even starting (likely a blocked CDN or missing module/WASM support).'
-                      : ' — last stage: ' + s + '.') +
+      err.textContent = 'The engine never even started — it stopped before the ' +
+        'first stage (likely a blocked CDN or missing module/WASM support).' +
         '  Retry, or go back to the hub.';
       err.style.display = 'block';
     }
@@ -546,7 +547,9 @@ const SOLID_PARTS = [];
 for (const which of ['entry', 'exit']) {
   const [lx, ly] = which === 'entry' ? ENTRY : EXIT;
   const hw = SW / 2, hl = SL / 2, z0 = 0.08, z1 = 0.08 + 0.26;
-  const c = [lx + hl, ly + hw, lx - hl, ly + hw, lx - hl, ly - hw, lx + hl, ly - hw];
+  // long axis along y (matches stoneWKTaboutPivot / geometry.py / the 3D mesh):
+  // x spans ±SW/2, y spans ±SL/2 about the stone centre.
+  const c = [lx + hw, ly + hl, lx - hw, ly + hl, lx - hw, ly - hl, lx + hw, ly - hl];
   const p = [0, 1, 2, 3, 0].map(i => R5(c[2*i]) + ' ' + R5(c[2*i + 1]));
   SOLID_PARTS.push({
     id: 'stone_' + which, rows: flatToRows(c, [[0, 1, 2, 3]], z0, z1, undefined),
@@ -847,7 +850,7 @@ function drawMap() {
   mctx.fillStyle = '#8b93a3'; mctx.font = '12px ui-monospace';
   mctx.fillText('wheel phase 0 → 24° (one tooth pitch) →', 14, mcv.height - 12);
   mctx.fillStyle = '#dfe4ec'; mctx.font = 'bold 13px ui-monospace';
-  mctx.fillText('collision map — every cell is one ST_Intersects verdict', 14, 26);
+  mctx.fillText('collision map — one verdict per cell (2 ST_Intersects)', 14, 26);
 }
 $('b-map').onclick = async () => {
   if (!mapData) { setStatus('fetching map…'); await loadMap(); }
@@ -877,11 +880,17 @@ function setStage(stage, detail) {
   if (!STAGE_T0[stage]) STAGE_T0[stage] = performance.now();
   if (stageEls.state) stageEls.state.textContent = stage;
   if (stageEls.stage) stageEls.stage.textContent = stage;
-  if (stageEls.banner) {
+    if (stageEls.banner) {
     stageEls.banner.classList.toggle('failed', stage === 'failed');
     stageEls.bStage.textContent = stage === 'failed' ? 'engine failed' : stage;
     if (detail) stageEls.bDetail.textContent = detail;
     stageEls.banner.style.display = 'block';
+    // a (re)entered non-failed stage invalidates any earlier error text — e.g. a
+    // retry that gets further than before must not keep stale red diagnostics up
+    if (stage !== 'failed' && stageEls.bErr) {
+      stageEls.bErr.textContent = '';
+      stageEls.bErr.style.display = 'none';
+    }
   }
   if (stage === 'ready' && stageEls.banner) stageEls.banner.style.display = 'none';
 }
@@ -1411,7 +1420,7 @@ async function loop() {
   }
   if (last) {
     updateHud(vClock);
-    render3D(last.fork, last.blocked);
+    render3D(last.fork, last.blocked, last.entry, last.exit);
   }
   setTimeout(loop, 16);
 }
@@ -1441,6 +1450,7 @@ $('b-step').onclick = async () => {
   vClock += 0.008;
   updateHud(vClock);
   render3D(last.fork, last.blocked, last.entry, last.exit);
+  drawTrace();   // manual stepping always refreshes the panel (bypasses the 100ms gate)
 };
 $('b-reset').onclick = () => {
   wheel = 0; beats = 0; frames = 0; freeFrames = 0; vClock = 0; lastRender = null;

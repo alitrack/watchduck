@@ -47,7 +47,7 @@
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
   DuckDB-WASM asks <b>do these shapes overlap?</b> on a 97 × 49 wheel-phase × fork-angle grid
-  (4,753 states, each cell one ST_Intersects verdict) to build the collision map,
+  (4,753 states — one verdict per cell, each from 2 ST_Intersects) to build the collision map,
   then one SQL query per frame walks the map tick by tick. No physics engine — just SQL. Nothing in the code says “12° per beat”; that number falls out of the shapes.</div>
 </header>
 <main>
@@ -346,7 +346,7 @@ function drawMap() {
   ctx.save(); ctx.translate(16, cy); ctx.rotate(-Math.PI / 2);
   ctx.fillText('fork angle −12° → +12°', 0, 0); ctx.restore();
   ctx.fillStyle = '#dfe4ec'; ctx.font = 'bold 13px ui-monospace';
-  ctx.fillText('collision map — every cell is one ST_Intersects verdict', 14, 26);
+  ctx.fillText('collision map — one verdict per cell (2 ST_Intersects)', 14, 26);
 }
 
 // ---------- main loop: virtual-clock physics substeps (each one SQL query) ----------
