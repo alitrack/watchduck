@@ -39,6 +39,23 @@
 - prefers-reduced-motion / 弱网：Not tested。
 - 15 秒循环视频：未制作（本轮用真实静态截图作 poster，符合任务书 fallback：不允许伪造运转过程）。视频留 P2-3。
 
+## Lane B 复核与修复（2026-11-13 22:20–22:30）
+
+sigil 复核报告（laneB/report.md，18.8KB）7 findings，全部带 file:line。裁决与处置：
+
+| id | 裁决 | 处置 |
+|---|---|---|
+| F01 🔴 25s 看门狗误杀慢下载 | 采纳 | 看门狗改为仅 idle 态触发；setStage 清 stale error（commit 42a1d2c） |
+| F02 🟡 running 路径漏传 entry/exit | 采纳 | loop() 补 4 参（同 commit） |
+| F03 🟡 SOLID_PARTS 石头长短轴转置 | 采纳（三方证据链：geometry.py/mesh/take-apart 均 y 向） | 角点改 lx±hw, ly±hl（同 commit） |
+| F04 🟢 Step 模式 trace 滞后 | 采纳 | b-step 末尾直调 drawTrace（同 commit） |
+| F05 🟢 poster 占位文案陈旧 | 采纳 | alt/.ph 更新（同 commit） |
+| F06 🟢 每格 1 vs 2 次 ST_Intersects 措辞 | 采纳 | 三页统一 "one verdict per cell, each from 2 ST_Intersects"（同 commit） |
+| F07 🟢 折叠开关无键盘路径 | 同意 DECLINE | 留 P2-1（任务书键盘要求在 Story Mode 节） |
+
+修复后回归：geometry.py PASS；浏览器实测 entry=1/exit=0 按石高亮生效、beats 正常、err 无残留。分支已推 origin/showcase-p0（42a1d2c）。
+
 ## 结论
 
-P0-1/2/3/4 全部落地，机械验收 6/6，浏览器实测通过。可进入 sigil 复核 lane。
+P0-1/2/3/4 全部落地，机械验收 6/6，浏览器实测通过，复核 7 条裁决完毕（6 修 1 缓）。可进入 P1（Break the Watch）。
+
