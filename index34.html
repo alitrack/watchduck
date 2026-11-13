@@ -105,7 +105,7 @@
   }
 }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/earcut.min.js"></script>
+<script src="./earcut.min.js"></script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -140,9 +140,9 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d11);
-scene.fog = new THREE.Fog(0x0b0d11, 90, 220);
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 500);
-camera.position.set(24, -18, 68);
+scene.fog = new THREE.Fog(0x0b0d11, 120, 380);
+const camera = new THREE.PerspectiveCamera(42, 1, 10, 400);
+camera.position.set(32, -24, 92);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 0, 1.5);
 controls.enableDamping = true;
@@ -325,7 +325,7 @@ for (let i = 0; i < snap.pieces.length; i += 20)
 await c.query(`CREATE VIEW movement.v_piece AS SELECT part, piece, z0, z1, profile AS world FROM movement.piece`);
 for (const stmt of (await (await fetch('04_take_apart.sql')).text()).replace(/\/\*[\s\S]*?\*\//g, '').split(';').map(s => s.trim()).filter(Boolean))
   await c.query(stmt);
-setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)');
+setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)' + (typeof earcut === 'function' ? '' : '  ⚠ earcut 未加载，孔会被填死！'), typeof earcut === 'function' ? '' : 'bad');
 
 // ---------- take-apart loop: every verdict is a SQL in this browser ----------
 const wayOut = {};   // part -> {s, axis} from v_way_out (needed for on-demand m_blockers)
