@@ -38,6 +38,18 @@
   .wdbar .lbl { color:var(--dim); font-size:11px; margin-right:8px; letter-spacing:1px; }
   .wdbar .wdb { font-size:11.5px; color:var(--dim); text-decoration:none; padding:4px 10px; border:1px solid transparent; border-radius:6px; }
   .wdbar .wdb:hover { color:var(--acc); border-color:var(--line); }
+  /* P0-3 loading state machine: banner over the canvas. No fake progress: the CDN
+     does not report bytes, so the banner shows stage + real elapsed time. */
+  .boot-banner { position:absolute; top:10px; left:50%; transform:translateX(-50%); z-index:4; max-width:94%;
+    background:rgba(11,13,17,.93); border:1px solid var(--line); border-radius:8px; padding:8px 12px;
+    font-size:11.5px; display:none; pointer-events:none; }
+  .boot-banner.failed { border-color:var(--bad); }
+  .boot-banner .bb-btns { pointer-events:auto; margin-top:8px; display:flex; gap:8px; align-items:center; }
+  .boot-banner .bb-err { display:none; margin-top:6px; color:var(--bad); font-size:11.5px; line-height:1.5; }
+  .boot-banner .bb-dim { color:var(--dim); margin-left:8px; }
+  .boot-banner .bb-link { color:var(--acc); text-decoration:none; font-size:12px; }
+  .bb-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:7px; background:var(--acc); vertical-align:-1px; }
+  .boot-banner.failed .bb-dot { background:var(--bad); }
 </style>
 <script type="importmap">
 { "imports": {
@@ -65,6 +77,15 @@
   <div class="canvas-wrap">
     <div id="scene"></div>
     <canvas id="mapcv" width="640" height="640"></canvas>
+    <div class="boot-banner" id="boot-banner">
+      <div class="bb-top"><span class="bb-dot" id="bb-dot"></span><b id="bb-stage">engine idle</b>
+        <span class="bb-dim" id="bb-detail">—</span><span class="bb-dim" id="bb-elapsed">0.0 s</span></div>
+      <div class="bb-err" id="bb-err"></div>
+      <div class="bb-btns" id="bb-btns" style="display:none">
+        <button id="bb-retry">Retry</button>
+        <a class="bb-link" href="index.html">Back to Hub</a>
+      </div>
+    </div>
     <div class="legend">
       <span><span class="dot" style="background:#c9a557"></span>escape wheel (15 teeth)</span>
       <span><span class="dot" style="background:#9fb4c8"></span>pallet fork</span>
@@ -80,7 +101,9 @@
       <div class="row"><span>spatial extension</span><span class="v" id="v-ext">—</span></div>
       <div class="row"><span>collision map</span><span class="v" id="v-map">—</span></div>
       <div class="row"><span>SQL queries / frame</span><span class="v" id="v-q">—</span></div>
-      <div class="row" id="status"><span>state</span><span class="v" id="v-state">booting</span></div>
+      <div class="row" id="status"><span>state</span><span class="v" id="v-state">idle</span></div>
+      <div class="row"><span>load stage</span><span class="v" id="v-stage">idle</span></div>
+      <div class="row"><span>stage elapsed</span><span class="v" id="v-stage-ms">0.0 s</span></div>
     </div>
     <div class="card">
       <h2>Watch</h2>
@@ -125,10 +148,47 @@
   This build: <a href="https://github.com/alitrack/watchduck" target="_blank">alitrack/watchduck</a> — pure static page, no server, DuckDB runs as WASM in a worker; 3D via Three.js.
 </footer>
 
+<script>
+// P0-3 watchdog: the module below does the real stage management (idle ->
+// downloading -> instantiating -> loading_spatial -> building_map -> ready / failed).
+// This classic script always runs; if the module never even starts (blocked CDN or
+// missing module/WASM support) it surfaces the failure here instead of leaving a
+// silent blank page. A slow-but-alive download is NOT failed here: the module
+// reports its own stage and elapsed time.
+window.__wdBootState = 'idle';
+(function () {
+  var retry = document.getElementById('bb-retry');
+  if (retry) retry.onclick = function () { location.reload(); };
+  setTimeout(function () {
+    var s = window.__wdBootState;
+    if (s === 'ready' || s === 'failed') return;
+    var banner = document.getElementById('boot-banner');
+    if (!banner) return;
+    banner.classList.add('failed');
+    banner.style.display = 'block';
+    var st = document.getElementById('bb-stage');
+    if (st) st.textContent = 'engine failed';
+    var err = document.getElementById('bb-err');
+    if (err) {
+      err.textContent = 'The engine never reached a ready state' +
+        (s === 'idle' ? ' — it stopped before even starting (likely a blocked CDN or missing module/WASM support).'
+                      : ' — last stage: ' + s + '.') +
+        '  Retry, or go back to the hub.';
+      err.style.display = 'block';
+    }
+    var btns = document.getElementById('bb-btns');
+    if (btns) btns.style.display = 'flex';
+    window.__wdBootState = 'failed';
+  }, 25000);
+})();
+</script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0/+esm';
+// duckdb-wasm is imported dynamically inside boot() below — a CDN failure there is
+// catchable and reported via the loading state machine, unlike a static import,
+// which would kill this whole module silently.
+const DUCKDB_ESM_URL = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0/+esm';
 
 // ---------- frozen geometry (found by random search, see scripts/geometry.py) ----------
 const R = 10.0, N_TEETH = 15, PITCH = 360.0 / N_TEETH;
@@ -729,21 +789,74 @@ $('b-map').onclick = async () => {
   $('b-map').textContent = showMap ? 'Show watch' : 'Show collision map';
 };
 
-// ---------- boot duckdb-wasm ----------
-const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-const worker_url = await duckdb.createWorker(bundle.mainWorker);
-const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker_url);
-await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-const c = await db.connect();
-$('v-ver').textContent = (await db.getVersion()).split(' ')[0];
-try { await c.query('LOAD spatial'); $('v-ext').textContent = 'loaded'; }
-catch (e) {
-  setStatus('installing spatial…');
-  await c.query('INSTALL spatial; LOAD spatial;');
-  $('v-ext').textContent = 'installed';
+// ---------- boot duckdb-wasm ----------  (P0-3: loading state machine)
+// States: idle -> downloading -> instantiating -> loading_spatial -> building_map
+// -> ready, plus failed at any point (Retry / Back-to-Hub). The CDN does not report
+// byte-level progress, so instead of a made-up percentage the UI shows the current
+// stage and real elapsed time (performance.now).
+let c = null;           // DuckDB connection (module-level: window.__wd, loadMap, physicsStep)
+let solidInfo = null;   // Ep5 verification result (filled in boot)
+let takeApart = null;   // take-apart rounds (filled in boot)
+let _clash3d = false;   // per-frame solid clash (set in physicsStep)
+const stageEls = {
+  state: $('v-state'), stage: $('v-stage'), ms: $('v-stage-ms'),
+  banner: $('boot-banner'), bStage: $('bb-stage'), bDetail: $('bb-detail'),
+  bMs: $('bb-elapsed'), bErr: $('bb-err'), bBtns: $('bb-btns'),
+};
+const STAGE_T0 = {};
+function setStage(stage, detail) {
+  window.__wdBootState = stage;
+  if (!STAGE_T0[stage]) STAGE_T0[stage] = performance.now();
+  if (stageEls.state) stageEls.state.textContent = stage;
+  if (stageEls.stage) stageEls.stage.textContent = stage;
+  if (stageEls.banner) {
+    stageEls.banner.classList.toggle('failed', stage === 'failed');
+    stageEls.bStage.textContent = stage === 'failed' ? 'engine failed' : stage;
+    if (detail) stageEls.bDetail.textContent = detail;
+    stageEls.banner.style.display = 'block';
+  }
+  if (stage === 'ready' && stageEls.banner) stageEls.banner.style.display = 'none';
 }
+const stageTimer = setInterval(() => {
+  const s = window.__wdBootState;
+  if (!STAGE_T0[s] || s === 'failed') return;   // freeze on failure
+  const txt = ((performance.now() - STAGE_T0[s]) / 1000).toFixed(1) + ' s';
+  if (stageEls.ms) stageEls.ms.textContent = txt;
+  if (stageEls.bMs) stageEls.bMs.textContent = txt;
+}, 500);
+function failBoot(stage, err) {
+  console.error('[watchduck] boot failed at stage:', stage, err);
+  setStage('failed', 'stage ' + stage);
+  if (stageEls.bErr) {
+    stageEls.bErr.textContent = 'The engine failed while ' + stage +
+      (err && err.message ? ': ' + String(err.message).slice(0, 220) : '.') +
+      '  (CDN blocked? missing WASM/Worker support? spatial extension download failed?)';
+    stageEls.bErr.style.display = 'block';
+  }
+  if (stageEls.bBtns) stageEls.bBtns.style.display = 'flex';
+  clearInterval(stageTimer);
+}
+setStage('idle', 'engine not started');
+const boot = async () => {
+  setStage('downloading', 'fetching the duckdb-wasm bundle from the CDN');
+  const duckdb = await import(DUCKDB_ESM_URL);
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const worker_url = await duckdb.createWorker(bundle.mainWorker);
+  const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker_url);
+  setStage('instantiating', 'compiling the WASM module (large on first load, cached after)');
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  c = await db.connect();
+  window.__wd = { get c() { return c; } };
+  $('v-ver').textContent = (await db.getVersion()).split(' ')[0];
+  setStage('loading_spatial', 'LOAD spatial');
+  try { await c.query('LOAD spatial'); $('v-ext').textContent = 'loaded'; }
+  catch (e) {
+    setStage('loading_spatial', 'spatial not preloaded — INSTALL from CDN, then LOAD');
+    await c.query('INSTALL spatial; LOAD spatial;');
+    $('v-ext').textContent = 'installed';
+  }
 
+  setStage('building_map', 'building esc_map (97 x 49 wheel x fork grid, 2 ST_Intersects per state)');
 // ---------- build the collision map IN SQL ----------
 const t0 = performance.now();
 const tooth = toothWKT();
@@ -786,7 +899,8 @@ $('v-map').textContent = `${Number(mapInfo.n).toLocaleString()} states (${Number
 // DB verified. The same profiles drive the per-frame 3D interference check:
 // static z-band overlap (computed below) AND 2D profile overlap after each
 // part's rotation — the rigorous ST_3DIntersects replacement, one query/frame.
-let solidInfo = null, _clash3d = false, takeApart = null;
+// (solidInfo / takeApart / _clash3d are module-level, declared above; filled in here)
+  setStage('building_map', 'building + verifying Ep5 solids in the DB');
 {
   await c.query(`CREATE OR REPLACE TABLE solids(part VARCHAR,
     x1 DOUBLE,y1 DOUBLE,z1 DOUBLE, x2 DOUBLE,y2 DOUBLE,z2 DOUBLE, x3 DOUBLE,y3 DOUBLE,z3 DOUBLE)`);
@@ -865,6 +979,7 @@ let solidInfo = null, _clash3d = false, takeApart = null;
   console.info('[watchduck] physical z-bands wheel', wheelB, 'stone', stoneB,
     'overlap =', zOverlap(wheelB, stoneB), '(coplanar mechanism → the 2D profile test decides)');
 
+    setStage('building_map', 'take-apart mini-engine (3 parts) in the DB');
   // ---------- Ep5 take_apart: iterative disassembly, ONE SQL query per round ----------
   // Parts slide out off the back (-z). "In the way" = 3D interference: the z-band
   // overlap AND the 2D profile overlap — the same rigorous test as p_frame.
@@ -992,6 +1107,7 @@ function showTakeApart(on) {
   $('b-take').textContent = 'Assemble';
 }
 $('b-take').onclick = () => showTakeApart(!($('b-take').textContent === 'Assemble'));
+  setStage('building_map', 'preparing p_frame (per-frame physics verdict)');
 // prepared per-frame query: physics verdict AND solid-profile 3D clash, ONE statement
 // blocked uses COALESCE(…,1) so a grid miss means BLOCKED (same as p_lookup:
 // an absent state never releases the wheel) — a bare subquery would yield NULL→0.
@@ -1020,9 +1136,20 @@ CREATE TABLE solids(part, x1..z3);  -- earcut triangle tables
 SELECT (SELECT blocked FROM esc_map WHERE …)          AS blocked,   -- physics (used)
        ST_Intersects(wheel_solid, stone_solid …) OR … AS clash3d;   -- Ep5 solid interference`);
 
+  // ---------- P0-3: boot complete ----------
+  setStage('ready');
+  clearInterval(stageTimer);
+  $('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false;
+  $('b-solid').disabled = false; $('b-take').disabled = false;
+  setStatus('ready — every frame is one SQL query');
+  return;
+};
+try { await boot(); }
+catch (e) { failBoot(window.__wdBootState || 'downloading', e); }
+
 // ---------- runtime: every frame, one SQL lookup ----------
 const fmt = v => (Math.round(v * 4) / 4).toFixed(2);
-window.__wd = { c };
+// window.__wd (with the live c connection) is set inside boot()
 let wheel = 0, beats = 0, running = false, showMap = false;
 let freeFrames = 0, frames = 0, lastT = 0;
 let _lastFork = 0, _lastBlocked = false;
@@ -1131,7 +1258,6 @@ function spin() {
 }
 spin();
 
-$('b-run').disabled = false; $('b-reset').disabled = false; $('b-map').disabled = false; $('b-solid').disabled = false; $('b-take').disabled = false;
 $('b-run').onclick = () => {
   if (!actx) { try { actx = new AudioContext(); } catch (e) {} }
   running = !running;
@@ -1148,7 +1274,6 @@ $('b-reset').onclick = () => {
  _clash3d = false;
  render3D(0, false);
 };
-setStatus('ready — every frame is one SQL query');
 render3D(0, false);
 </script>
 </body>
