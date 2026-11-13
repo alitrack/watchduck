@@ -75,6 +75,8 @@
       <div class="row"><span>snapshot pieces</span><span class="v" id="v-pieces">—</span></div>
       <div class="row"><span>rounds computed</span><span class="v" id="v-rounds">—</span></div>
       <div class="row"><span>golden table</span><span class="v" id="v-gold">—</span></div>
+      <div class="row"><span>build</span><span class="v" id="v-build">—</span></div>
+      <div class="row"><span>gl 诊断</span><span class="v" id="v-gl">—</span></div>
       <div class="btns">
         <button id="b-take" class="primary" disabled>Take apart</button>
         <button id="b-assemble" disabled>Assemble</button>
@@ -112,6 +114,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as duckdb from 'duckdb-wasm';
 
 const $ = id => document.getElementById(id);
+const BUILD_ID = '20261113-earcutfix-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
 const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
 window.__PE = [];
 addEventListener('error', e => { window.__PE.push(e.message); });
@@ -326,6 +329,19 @@ await c.query(`CREATE VIEW movement.v_piece AS SELECT part, piece, z0, z1, profi
 for (const stmt of (await (await fetch('04_take_apart.sql')).text()).replace(/\/\*[\s\S]*?\*\//g, '').split(';').map(s => s.trim()).filter(Boolean))
   await c.query(stmt);
 setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)' + (typeof earcut === 'function' ? '' : '  ⚠ earcut 未加载，孔会被填死！'), typeof earcut === 'function' ? '' : 'bad');
+// build fingerprint: lets the user report WHICH build is actually rendered (cache-buster proof)
+$('v-build').textContent = 'b' + BUILD_ID + ' earcut:' + (typeof earcut === 'function' ? 'OK' : 'MISSING!') + ' dpr:' + (Math.min(devicePixelRatio, 2));
+// live GL diagnostics in the HUD (renders on their GPU, reported back as text)
+setTimeout(() => {
+  try {
+    const gl = renderer.getContext();
+    const d = gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL).split(' ').slice(0, 3).join(' ') : 'unknown';
+    const meshes = renderer.info.render;
+    const ctxLost = gl.isContextLost();
+    $('v-gl').textContent = ctxLost ? 'CONTEXT LOST!' : gpu + ' · ' + meshes.calls + ' calls · ' + meshes.triangles + ' tris · err=0x' + gl.getError().toString(16);
+  } catch (e) { $('v-gl').textContent = 'diag err: ' + e.message; }
+}, 2500);
 
 // ---------- take-apart loop: every verdict is a SQL in this browser ----------
 const wayOut = {};   // part -> {s, axis} from v_way_out (needed for on-demand m_blockers)
