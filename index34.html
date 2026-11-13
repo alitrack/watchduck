@@ -142,7 +142,7 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b0d11);
 scene.fog = new THREE.Fog(0x0b0d11, 90, 220);
 const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 500);
-camera.position.set(14, -12, 44);
+camera.position.set(18, -15, 56);
 const controls = new OrbitControls(camera, canvas);
 controls.target.set(0, 0, 1.5);
 controls.enableDamping = true;
@@ -258,6 +258,7 @@ const snap = await (await fetch('movement_snapshot.json')).json();
 setStatus('building 3D scene…');
 const isX = part => (snap.parts.find(p => p.part === part) || {}).axis === 'x';
 const partMat = {};
+const partXY = {};   // per-part centroid in watch coords, for the radial fan-out
 for (const pc of snap.pieces) {
   const isStem = isX(pc.part);
   const mesh = isStem ? buildStemPiece(pc.wkt, MATS[pc.material] || MATS.steel, pc.z0, pc.z1)
@@ -266,6 +267,24 @@ for (const pc of snap.pieces) {
   mesh.material = mesh.material.clone(); // per-part material so hover glow doesn't leak to same-material parts
   movement.add(mesh);
   (partMat[pc.part] = partMat[pc.part] || []).push(mesh);
+  // centroid (watch coords) — radial fan-out direction
+  const acc = partXY[pc.part] = partXY[pc.part] || { sx: 0, sy: 0, n: 0 };
+  if (isStem) {
+    const ring = parseWKT(pc.wkt)[0] || [];
+    let cy = 0; for (const [a] of ring) cy += a; cy /= Math.max(ring.length, 1);
+    acc.sx += (pc.z0 + pc.z1) / 2; acc.sy += cy; acc.n++;
+  } else {
+    const outer = parseWKT(pc.wkt)[0] || [];
+    for (const [x, y] of outer) { acc.sx += x; acc.sy += y; }
+    acc.n += Math.max(outer.length, 1);
+  }
+}
+// radial fan-out direction per part (classic exploded-view: fly out along movement-centre → part-centroid)
+const radial = {};
+for (const [part, acc] of Object.entries(partXY)) {
+  const cx = acc.sx / acc.n, cy2 = acc.sy / acc.n;
+  const L = Math.hypot(cx, cy2);
+  radial[part] = L > 0.8 ? { x: cx / L, y: cy2 / L } : { x: 0, y: 1 }; // dead-centre parts: +y
 }
 // stem: join its pieces into one movable group (they move together along x)
 {
@@ -398,13 +417,20 @@ function renderRounds(liveUpTo) {
 renderRounds(0);
 
 // ---------- explode animation ----------
-// target offset for part p: along its exit axis, spaced by level (later removals sit closer to the plate)
+// target offset for part p: along its exit axis (DB verdict) + a radial fan-out
+// (movement-centre → part-centroid) so the 34 parts don't stack into a mush
 function targetOffset(part) {
   const r = removals.find(x => x.part === part);
   if (!r) return new THREE.Vector3();
-  const spread = 3.2;
+  const spread = 2.6;
   const k = (levels[part] || 1) * spread;
-  return new THREE.Vector3(r.dx * k, 0, r.dz * k);
+  const ax = r.dx * k, az = r.dz * k;
+  // radial: full fan for the last-off parts (they'd otherwise pile up),
+  // and always ≥ half-fan so even round-1 parts separate from their stack
+  const fan = (levels[part] || 1) >= 3 ? 10 : 6;
+  const rd = radial[part] || { x: 0, y: 1 };
+  // watch (x, y) -> three (x, -y)
+  return new THREE.Vector3(ax + rd.x * fan, -rd.y * fan, az);
 }
 const _tgt = {};   // part -> THREE.Vector3
 function refreshTargets() {
@@ -611,6 +637,14 @@ window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
                    m.localToWorld(v); v.project(camera);
                    const r = canvas.getBoundingClientRect();
                    return { x: (v.x + 1) / 2 * r.width + r.left, y: (1 - v.y) / 2 * r.height + r.top };
+                 },
+                 worldPos(part) {
+                   const m = (partMat[part] || [])[0];
+                   if (!m) return null;
+                   m.updateWorldMatrix(true, false);
+                   const v = new THREE.Vector3(0, 0, 0);
+                   m.localToWorld(v);
+                   return [v.x, v.y, v.z];
                  } };
 tick();
 </script>
