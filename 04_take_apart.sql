@@ -139,7 +139,8 @@ WHERE EXISTS (
 ;
 
 
-/* diagnostic: which still-present parts block the mover (for debugging) */
+/* diagnostic: which still-present parts block the mover (for debugging) —
+   same three-branch predicate as m_blocked, so "blockers non-empty" <=> "blocked" */
 CREATE MACRO m_blockers(mp TEXT, ms INTEGER) AS TABLE
 WITH pp AS (SELECT v.world AS g, v.z0, v.z1, p2.axis AS paxis
             FROM movement.v_piece v
@@ -151,10 +152,46 @@ WITH pp AS (SELECT v.world AS g, v.z0, v.z1, p2.axis AS paxis
             WHERE v.part <> mp AND v.part NOT IN (SELECT part FROM movement.removal))
 SELECT DISTINCT qq.part AS blocker FROM pp, qq
 WHERE
+    /* ---- same axis: both z-axis, exact 2D interior overlap + q on the exit path ---- */
     (pp.paxis = 'z' AND qq.qaxis = 'z' AND
      ST_Intersects(pp.g, qq.g)
      AND ST_Area(ST_Intersection(pp.g, qq.g)) > 1e-9
-     AND ((ms > 0 AND qq.z1 > pp.z0 + 1e-9) OR (ms < 0 AND qq.z0 < pp.z1 - 1e-9)));
+     AND ((ms > 0 AND qq.z1 > pp.z0 + 1e-9) OR (ms < 0 AND qq.z0 < pp.z1 - 1e-9)))
+    OR
+    /* ---- across axes: the exact 2D reduction of the 3D sweep (copied from m_blocked) ---- */
+    (
+      (pp.paxis = 'x' AND qq.qaxis = 'z' AND
+       EXISTS (SELECT 1 FROM movement.stem_solid st
+               WHERE GREATEST(qq.z0 - 0.6, 0.6 - qq.z1, 0.0) < st.r + 1e-9
+                 AND ST_Intersects(
+                       ST_Intersection(qq.g, ST_MakeEnvelope(st.x0, -1000, 1000, 1000)),
+                       ST_MakeEnvelope(st.x0,
+                                       -sqrt(st.r*st.r - GREATEST(qq.z0 - 0.6, 0.6 - qq.z1, 0.0)*GREATEST(qq.z0 - 0.6, 0.6 - qq.z1, 0.0)),
+                                       1000,
+                                        sqrt(st.r*st.r - GREATEST(qq.z0 - 0.6, 0.6 - qq.z1, 0.0)*GREATEST(qq.z0 - 0.6, 0.6 - qq.z1, 0.0))))))
+      OR
+      (pp.paxis = 'z' AND qq.qaxis = 'x' AND
+       EXISTS (SELECT 1 FROM movement.stem_solid st
+               WHERE GREATEST(
+                       CASE WHEN ms > 0 THEN (CASE WHEN 0.6 < pp.z0 THEN pp.z0 - 0.6 ELSE 0.0 END)
+                                        ELSE  (CASE WHEN 0.6 > pp.z1 THEN 0.6 - pp.z1 ELSE 0.0 END) END, 0.0) < st.r + 1e-9
+                 AND ST_Intersects(
+                       ST_Intersection(pp.g, ST_MakeEnvelope(st.x0, -1000, st.x1, 1000)),
+                       ST_MakeEnvelope(st.x0,
+                                       -sqrt(st.r*st.r - GREATEST(
+                                             CASE WHEN ms > 0 THEN (CASE WHEN 0.6 < pp.z0 THEN pp.z0 - 0.6 ELSE 0.0 END)
+                                                              ELSE  (CASE WHEN 0.6 > pp.z1 THEN 0.6 - pp.z1 ELSE 0.0 END) END, 0.0)
+                                             *GREATEST(
+                                             CASE WHEN ms > 0 THEN (CASE WHEN 0.6 < pp.z0 THEN pp.z0 - 0.6 ELSE 0.0 END)
+                                                              ELSE  (CASE WHEN 0.6 > pp.z1 THEN 0.6 - pp.z1 ELSE 0.0 END) END, 0.0)),
+                                       st.x1,
+                                        sqrt(st.r*st.r - GREATEST(
+                                             CASE WHEN ms > 0 THEN (CASE WHEN 0.6 < pp.z0 THEN pp.z0 - 0.6 ELSE 0.0 END)
+                                                              ELSE  (CASE WHEN 0.6 > pp.z1 THEN 0.6 - pp.z1 ELSE 0.0 END) END, 0.0)
+                                             *GREATEST(
+                                             CASE WHEN ms > 0 THEN (CASE WHEN 0.6 < pp.z0 THEN pp.z0 - 0.6 ELSE 0.0 END)
+                                                              ELSE  (CASE WHEN 0.6 > pp.z1 THEN 0.6 - pp.z1 ELSE 0.0 END) END, 0.0))))))
+    );
 
 /* exploded-view levels (last off sits nearest the plate) */
 CREATE VIEW movement.v_levels AS
