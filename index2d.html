@@ -46,8 +46,9 @@
   <a class="wdb" href="index2d.html">2D view</a></nav>
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
-  DuckDB-WASM asks <b>do these shapes overlap?</b> (~79k ST_Intersects calls) to build the collision map,
-  then a recursive SQL solver walks the map tick by tick. No physics engine — just SQL. Nothing in the code says “12° per beat”; that number falls out of the shapes.</div>
+  DuckDB-WASM asks <b>do these shapes overlap?</b> on a 97 × 49 wheel-phase × fork-angle grid
+  (4,753 states, each cell one ST_Intersects verdict) to build the collision map,
+  then one SQL query per frame walks the map tick by tick. No physics engine — just SQL. Nothing in the code says “12° per beat”; that number falls out of the shapes.</div>
 </header>
 <main>
   <div class="canvas-wrap">
@@ -83,6 +84,11 @@
     <div class="card">
       <h2>The SQL doing the physics right now</h2>
       <div class="sql" id="sql-view">—</div>
+    </div>
+    <div class="card">
+      <h2>Also see</h2>
+      <div class="row"><span>same mechanism, in 3D</span><a href="escapement3d.html">→ 3D escapement</a></div>
+      <div class="row"><span>full movement, 34 parts</span><a href="index34.html">→ take-apart</a></div>
     </div>
   </div>
 </main>

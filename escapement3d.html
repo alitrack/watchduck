@@ -55,6 +55,22 @@
   .trace-toggle:hover { color:var(--acc); }
   .tr-chev { color:var(--dim); }
   #t-sqltext { max-height:150px; }
+  /* P0-4: contrast + collapsible diagnostics + mobile */
+  .verdict-chips { margin-top:6px; }
+  .vchip { display:inline-block; width:15px; height:15px; line-height:15px; text-align:center; border-radius:3px; margin-right:5px; font-size:9.5px; }
+  .vchip.bad { background:rgba(247,119,119,.16); color:var(--bad); border:1px solid var(--bad); }
+  .vchip.good { background:rgba(125,223,138,.14); color:var(--good); border:1px solid var(--good); }
+  details#diag-details { display:flex; flex-direction:column; gap:12px; }
+  #diag-details > summary { list-style:none; cursor:pointer; background:var(--panel); border:1px solid var(--line);
+    border-radius:10px; padding:10px 14px; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+  #diag-details > summary::-webkit-details-marker { display:none; }
+  #diag-details > summary:hover { color:var(--acc); border-color:var(--acc); }
+  @media (max-width:560px) {
+    main { padding:12px 12px 24px; }
+    .side { flex:1 1 auto; min-width:0; max-width:none; }
+    .canvas-wrap { min-width:0; }
+    .boot-banner { font-size:10.5px; }
+  }
 </style>
 <script type="importmap">
 { "imports": {
@@ -73,8 +89,9 @@
   <a class="wdb" href="index2d.html">2D view</a></nav>
   <h1>watchduck <span class="accent">// every tick computed by DuckDB, in your browser — 3D</span></h1>
   <div class="sub">A Swiss lever escapement built the “model the metal, not the maths” way: parts are polygons,
-  DuckDB-WASM asks <b>do these shapes overlap?</b> (~79k ST_Intersects calls) to build the collision map,
-  then a recursive SQL solver walks the map tick by tick. No physics engine — just SQL. The 3D is pure
+  DuckDB-WASM asks <b>do these shapes overlap?</b> on a 97 × 49 wheel-phase × fork-angle grid
+  (4,753 states, each cell one ST_Intersects verdict) to build the collision map,
+  then one prepared SQL query per frame walks the map tick by tick. No physics engine — just SQL. The 3D is pure
   presentation — <b>DuckDB still decides every tick</b> — nothing in the code says “12° per beat”; that number
   falls out of the shapes. Drag to orbit, scroll to zoom — flip it over to see the dial and hands on the other side.</div>
 </header>
@@ -97,7 +114,11 @@
       <span><span class="dot" style="background:#e05252"></span>ruby stones</span>
       <span><span class="dot" style="background:#7ddf8a"></span>balance + hairspring</span>
     </div>
-    <div class="hint">● collision = stones + wheel glow red — the SQL verdict, not the renderer</div>
+    <div class="legend verdict-chips">
+      <span><span class="vchip bad">▲</span>collision — SQL verdict blocked = 1 (stones/wheel glow red)</span>
+      <span><span class="vchip good">○</span>free — SQL verdict blocked = 0 (no glow)</span>
+    </div>
+    <div class="hint">the glow follows the p_frame SQL verdict, not the renderer — and each state is labelled with text, not colour alone</div>
   </div>
   <div class="side">
     <div class="card">
@@ -123,6 +144,8 @@
         <button id="b-map" disabled>Show collision map</button>
         <button id="b-reset" disabled>Reset</button>
       </div>
+      <div class="hint" style="margin-top:7px">demo path: ① Start → ② it ticks (▲ red glow = collision) →
+      ③ Show collision map → ④ Pause / Step → ⑤ read “Why did it tick?”</div>
     </div>
     <div class="card" id="trace-card">
       <h2 class="trace-toggle" id="trace-toggle">Why did it tick? <span class="tr-chev" id="trace-chev">▾</span></h2>
@@ -141,6 +164,8 @@
         ≤10 Hz view of those results. Nothing shown here is synthesized.</div>
       </div>
     </div>
+    <details id="diag-details" open>
+    <summary class="diag-summary">Diagnostics — SQL pipeline · solids verification · take-apart</summary>
     <div class="card">
       <h2>Solids — 4 parts, built &amp; verified in DuckDB</h2>
       <div class="row"><span>triangles (earcut → DB table)</span><span class="v" id="v-tris">—</span></div>
@@ -163,6 +188,20 @@
       <h2>The SQL doing the physics right now</h2>
       <div class="sql" id="sql-view">—</div>
     </div>
+    <div class="card">
+      <h2>What SQL computes vs what Three.js draws</h2>
+      <div style="font-size:12px;line-height:1.7">
+        <b>SQL (DuckDB-WASM + Spatial) computes:</b> the collision map (<code>ST_Intersects</code> over the
+        97 × 49 wheel × fork grid), the per-frame <code>blocked</code> / <code>entry</code> / <code>exit</code>
+        verdicts (<code>p_frame</code>), the 3D-solid clash cross-check, and the take-apart order.
+        <b>Three.js only draws:</b> those same polygons as metal meshes, their rotations, and the highlight
+        state taken from the SQL verdicts — no physics, no collision math in the renderer.
+        <div style="margin-top:8px">The same mechanism as an engineering drawing:
+        <a href="index2d.html">→ 2D view</a> · the full movement taking apart:
+        <a href="index34.html">→ 34-part take-apart</a>.</div>
+      </div>
+    </div>
+    </details>
   </div>
 </main>
 <footer>
@@ -1350,7 +1389,7 @@ function updateHud(tSec) {
     _dpbHist.push(wheel - _lastBeatWheel); _lastBeatWheel = wheel;
     if (_dpbHist.length > 25) _dpbHist.shift();
     const mean = _dpbHist.reduce((a, b) => a + b, 0) / _dpbHist.length;
-    $('v-dpb').textContent = beats > 2 ? mean.toFixed(2) + '°  (theory: 12.00°)' : '—';
+    $('v-dpb').textContent = beats > 2 ? mean.toFixed(2) + '°  (theory: half a tooth pitch)' : '—';
     $('v-rate').textContent = `${(wheel / PITCH).toFixed(1)} teeth in ${beats} beats`;
   }
   // actual browser clock, refreshed every frame while running
@@ -1424,6 +1463,13 @@ $('trace-toggle').onclick = () => {
   tb.style.display = open ? 'none' : 'block';
   $('trace-chev').textContent = open ? '▸' : '▾';
 };
+// P0-4: narrow screens (e.g. 390 px) — collapse the diagnostics and the trace body;
+// the 3D view + main controls + the boot banner stay first. Desktop keeps them open.
+if (window.innerWidth < 600) {
+  const dd = $('diag-details'); if (dd) dd.removeAttribute('open');
+  const tb = $('trace-body'); if (tb) tb.style.display = 'none';
+  const tc = $('trace-chev'); if (tc) tc.textContent = '▸';
+}
 render3D(0, false);
 </script>
 </body>
