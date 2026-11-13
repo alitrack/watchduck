@@ -265,6 +265,7 @@ for (const pc of snap.pieces) {
                       : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1);
   if (!mesh) continue;
   mesh.material = mesh.material.clone(); // per-part material so hover glow doesn't leak to same-material parts
+  mesh.userData.rest = mesh.position.clone();   // where this mesh sits when assembled
   movement.add(mesh);
   (partMat[pc.part] = partMat[pc.part] || []).push(mesh);
   // centroid (watch coords) — radial fan-out direction
@@ -432,7 +433,9 @@ function targetOffset(part) {
   // watch (x, y) -> three (x, -y)
   return new THREE.Vector3(ax + rd.x * fan, -rd.y * fan, az);
 }
-const _tgt = {};   // part -> THREE.Vector3
+const _tgt = {};   // part -> THREE.Vector3 (explode OFFSET from rest, not an absolute position)
+const V0 = new THREE.Vector3();
+const _tmp = new THREE.Vector3();
 function refreshTargets() {
   const out = new Set(removals.filter(r => r.round <= roundShown).map(r => r.part));
   for (const part of Object.keys(partMat)) _tgt[part] = out.has(part) ? targetOffset(part) : new THREE.Vector3();
@@ -598,12 +601,17 @@ function tick() {
   const jOn = performance.now() < jitterUntil;
   const jPh = performance.now() * 0.045;
   for (const [part, ms] of Object.entries(partMat)) {
-    const t = _tgt[part];
+    const off = _tgt[part] || V0;
     const r = removals.find(x => x.part === part);
     const jAmp = (jOn && jitterParts.has(part) && r) ? 0.16 : 0;
     const jx = jAmp ? Math.sin(jPh + part.length) * jAmp * (r.dx ? 1 : 0) : 0;
     const jz = jAmp ? Math.sin(jPh * 1.3 + part.length) * jAmp * (r.dz ? 1 : 0) : 0;
-    if (t) for (const m of ms) { m.position.lerp(t, k); m.position.x += jx; m.position.z += jz; }
+    for (const m of ms) {
+      // target = rest position + explode offset (rest is the assembled seat, not the origin)
+      _tmp.copy(m.userData.rest || V0).add(off);
+      m.position.lerp(_tmp, k);
+      m.position.x += jx; m.position.z += jz;
+    }
   }
   updateHands();
   controls.update();
