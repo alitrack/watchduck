@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>watchduck — clocks computed with SQL</title>
+<title>watchduck — A Mechanical Watch. Powered by SQL.</title>
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --txt:#dfe4ec; --dim:#8b93a3; --acc:#4fc3f7; --gold:#c9a557; }
   * { box-sizing:border-box; }
@@ -12,12 +12,31 @@
   .wdbar .lbl { color:var(--dim); font-size:11px; margin-right:8px; letter-spacing:1px; }
   .wdbar .wdb { font-size:11.5px; color:var(--dim); text-decoration:none; padding:4px 10px; border:1px solid transparent; border-radius:6px; }
   .wdbar .wdb:hover { color:var(--acc); border-color:var(--line); }
-  header { padding:26px 28px 12px; border-bottom:1px solid var(--line); }
-  h1 { font-size:22px; margin:0 0 6px; letter-spacing:.5px; }
+  .hero { display:flex; flex-wrap:wrap; gap:26px; padding:24px 28px 8px; align-items:flex-start; }
+  .hero .txt { flex:1 1 400px; min-width:300px; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:.5px; line-height:1.25; }
   h1 .accent { color:var(--acc); }
-  .sub { color:var(--dim); font-size:13px; line-height:1.6; max-width:900px; }
+  .sub { color:var(--dim); font-size:13px; line-height:1.7; max-width:640px; }
   .sub b { color:var(--txt); font-weight:600; }
-  .cards { display:flex; flex-wrap:wrap; gap:16px; padding:22px 28px 40px; }
+  .ctas { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+  .cta { display:inline-block; text-decoration:none; font-size:13px; border-radius:8px; padding:10px 16px;
+         border:1px solid var(--line); color:var(--txt); background:var(--panel); transition:border-color .15s, transform .15s; }
+  .cta.primary { border-color:var(--acc); color:var(--acc); font-weight:700; }
+  .cta:hover { border-color:var(--acc); color:var(--acc); transform:translateY(-1px); }
+  .cta.soon { opacity:.45; cursor:not-allowed; }
+  .cta-note { font-size:11px; color:var(--dim); margin-top:9px; line-height:1.6; max-width:560px; }
+  figure.preview { flex:1 1 380px; max-width:520px; min-width:300px; margin:0; background:var(--panel);
+                   border:1px solid var(--line); border-radius:12px; padding:10px; position:relative; }
+  figure.preview .frame { position:relative; }
+  figure.preview img { display:block; width:100%; border-radius:8px; background:#0b0d11; object-fit:cover; }
+  figure.preview .badge { position:absolute; top:10px; left:10px; background:rgba(11,13,17,.88); border:1px solid var(--gold);
+                          color:var(--gold); font-size:10.5px; letter-spacing:1.5px; padding:4px 10px; border-radius:20px; }
+  figure.preview .ph { display:none; padding:34px 16px; text-align:center; color:#e0a93e; font-size:12px; line-height:1.7;
+                       background:#0b0d11; border-radius:8px; }
+  figure.preview figcaption { color:var(--dim); font-size:11.5px; line-height:1.65; padding-top:9px; }
+  figure.preview figcaption a { color:var(--acc); text-decoration:none; }
+  figure.preview figcaption a:hover { text-decoration:underline; }
+  .cards { display:flex; flex-wrap:wrap; gap:16px; padding:18px 28px 36px; }
   a.card { flex:1 1 280px; max-width:420px; background:var(--panel); border:1px solid var(--line); border-radius:12px;
            padding:18px 20px; text-decoration:none; color:var(--txt); display:block; transition:border-color .15s, transform .15s; }
   a.card:hover { border-color:var(--acc); transform:translateY(-2px); }
@@ -29,6 +48,7 @@
   footer { color:var(--dim); font-size:11.5px; padding:0 28px 30px; line-height:1.7; }
   footer a { color:var(--acc); text-decoration:none; }
   code { background:#0b0d11; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:11px; }
+  @media (prefers-reduced-motion: reduce) { .cta, a.card { transition:none; } .cta:hover, a.card:hover { transform:none; } }
 </style>
 </head>
 <body>
@@ -37,15 +57,63 @@
   <a class="wdb" href="index34.html">34-part movement</a>
   <a class="wdb" href="escapement3d.html">3D escapement</a>
   <a class="wdb" href="index2d.html">2D view</a></nav>
-<header>
-  <h1>watchduck <span class="accent">// clocks computed with SQL</span></h1>
-  <div class="sub">
-    The parts are <b>polygons in DuckDB</b>: collisions = <code>ST_Intersects</code> pairwise verdicts,
-    ticking = a recursive SQL solver, disassembly = <code>m_blocked()</code> asking the database
-    "who can move right now?" tick by tick. No physics engine — <b>every frame is a SQL query</b>,
-    running in DuckDB-WASM in your browser.
+
+<div class="hero">
+  <div class="txt">
+    <h1>A Mechanical Watch.<br><span class="accent">Powered by SQL.</span></h1>
+    <div class="sub">
+      A Swiss lever escapement where every part is a <b>polygon in DuckDB</b>. Collisions are real
+      <code>ST_Intersects</code> queries against a collision map; ticking is a discrete
+      <b>blocked / free</b> state decision the database makes query by query — no physics
+      engine. The 34-part movement comes apart through <code>m_blocked()</code> asking the
+      database "who can move right now?", round by round. All of it runs as
+      <b>DuckDB-WASM in your browser</b>. Nothing in the code says how many degrees a beat
+      is — that falls out of the shapes.
+    </div>
+    <div class="ctas">
+      <a class="cta primary" href="escapement3d.html">Run Live SQL Simulation →</a>
+      <a class="cta" href="04_take_apart.sql" target="_blank" rel="noopener">View the SQL</a>
+      <span class="cta soon" role="button" aria-disabled="true"
+            title="Opens in a later showcase stage: it will change one real geometric parameter, rebuild the SQL geometry, and show the DB verdicts differ — no faked faults.">
+        Break the Watch · opens in a later stage
+      </span>
+    </div>
+    <div class="cta-note">
+      "Run Live SQL Simulation" opens the 3D escapement: first load downloads the ~40 MB
+      DuckDB-WASM engine (cached afterwards). "View the SQL" opens <code>04_take_apart.sql</code>,
+      the disassembly predicates exactly as the browser executes them.
+      <b>Break the Watch</b> is disabled until a later stage wires one real geometry parameter
+      through the same SQL chain.
+    </div>
   </div>
-</header>
+
+  <figure class="preview">
+    <span class="badge">RECORDED PREVIEW</span>
+    <div class="frame">
+      <img src="assets/preview-poster.png"
+           alt="Recorded 3D escapement preview — currently a labelled placeholder until the real recorded screenshot is placed at assets/preview-poster.png"
+           onerror="this.style.display='none'; this.nextElementSibling.style.display='block'">
+      <div class="ph">poster file missing — the real recorded screenshot goes to
+        <b>assets/preview-poster.png</b> (coordinator places it; see docs/showcase/qa.md)</div>
+    </div>
+    <figcaption>
+      <b>Recorded preview, not live SQL.</b> A still from the real 3D demo — the simulation
+      itself only runs after you click through:
+      <a href="escapement3d.html">enter the live SQL simulation →</a>
+      <br><span style="font-size:10.5px">(the image file is a labelled placeholder for now;
+      the coordinator will replace it with the actual recorded shot.)</span>
+    </figcaption>
+  </figure>
+</div>
+
+<!-- When a real recording is available, replace the <img> above with, e.g.:
+     <video src="assets/preview.webm" muted playsinline loop preload="metadata"
+            poster="assets/preview-poster.png"
+            aria-label="Recorded 10-15 second loop of the live 3D escapement"></video>
+     (a <noscript> fallback keeps the poster; respect prefers-reduced-motion by not
+     auto-playing the loop). This hub must NOT instantiate DuckDB-WASM itself —
+     it stays a fast static page. -->
+
 <div class="cards">
   <a class="card" href="index34.html">
     <div class="t"><span class="n">34 parts</span>Ep5 full movement · 3D take-apart</div>
@@ -59,17 +127,18 @@
   <a class="card" href="escapement3d.html">
     <div class="t"><span class="n">3D</span>Escapement · live ticking</div>
     <div class="d">A Swiss lever escapement in 3D: solid metal escape wheel, ruby pallet stones,
-      balance + hairspring, hands showing real time. ~79k <b>ST_Intersects</b> build the collision
-      map live, a recursive SQL solver walks it tick by tick — the <b>12°/beat emerges from the
-      shapes; nothing in the code says 12°</b>. Stones glow red on collision, driven by the SQL
-      verdict, not the renderer.</div>
+      balance + hairspring, hands showing real time. A <b>4,753-state collision map</b>
+      (97 × 49 wheel-phase × fork-angle grid, every cell one <code>ST_Intersects</code>
+      verdict) is built live in SQL; one prepared query per frame decides whether the wheel
+      moves — <b>the degrees-per-beat falls out of the shapes; nothing in the code says a
+      fixed angle</b>. Stones glow red on collision, driven by the SQL verdict, not the renderer.</div>
     <div class="go">Open →</div>
   </a>
   <a class="card" href="index2d.html">
     <div class="t"><span class="n">2D</span>Engineering view · collision map</div>
     <div class="d">The same engine in orthographic 2D: tooth and stone outlines directly visible,
       collision states marked on the drawing. The best way to see "what the SQL is actually doing"
-      — every <code>p_frame</code> verdict corresponds to the picture.</div>
+      — one real SQL query per frame, every blocked/free verdict corresponds to the picture.</div>
     <div class="go">Open →</div>
   </a>
 </div>
