@@ -46,6 +46,10 @@
   #pickcard .mt { color:var(--dim); }
   #pickcard .ro { margin-top:3px; }
   #pickcard .ro b { color:var(--gold); }
+  #pickcard .bl { margin-top:6px; padding-top:6px; border-top:1px dashed var(--line); color:#ffb4a8; }
+  #pickcard .bl b { color:#ff8d80; }
+  #pickcard .bln { color:var(--dim); font-size:11px; display:block; margin-top:2px; }
+  #pickcard .blk { margin-top:6px; padding-top:6px; border-top:1px dashed var(--line); color:var(--dim); font-size:11.5px; }
   .tip { position:absolute; background:rgba(23,26,33,.92); border:1px solid var(--line); border-radius:5px;
     padding:2px 8px; font-size:11.5px; pointer-events:none; display:none; z-index:6; white-space:nowrap; }
   #rounds .r { cursor:pointer; }
@@ -300,8 +304,10 @@ for (const stmt of (await (await fetch('04_take_apart.sql')).text()).replace(/\/
 setStatus('DB ready — take-apart engine loaded (m_blocked live in wasm)');
 
 // ---------- take-apart loop: every verdict is a SQL in this browser ----------
+const wayOut = {};   // part -> {s, axis} from v_way_out (needed for on-demand m_blockers)
 async function computeRounds() {
   const ways = await Q(`SELECT part, axis, is_base, s FROM movement.v_way_out`);
+  for (const w of ways) wayOut[w.part] = { s: w.s, axis: w.axis };
   const removal = [];
   let round = 0;
   while (round < 15) {
@@ -316,12 +322,24 @@ async function computeRounds() {
     if (!free.length) break;
     for (const f of free) {
       removal.push(f);
-      await c.query(`INSERT INTO movement.removal VALUES ('${f.part}', ${f.round}, ${f.dx}, 0.0, ${f.dz}, NULL)`);
+      // incremental insert: m_blocked() in the NEXT round must see these parts as gone
+      await c.query(`INSERT INTO movement.removal VALUES ('${f.part.replace(/'/g, "''")}', ${f.round}, ${f.dx}, 0.0, ${f.dz}, NULL)`);
     }
   }
   return removal;
 }
 const removals = await computeRounds();
+let roundShown = 0;   // how many rounds the view currently shows (DB ledger mirrors this)
+// keep the DB removal ledger in sync with the visual state: m_blockers() reads it as
+// "parts still in place", so the picker card can answer "who is blocking it" RIGHT NOW
+async function syncRemovalTable() {
+  await c.query(`DELETE FROM movement.removal`);
+  const rows = removals.filter(r => r.round <= roundShown);
+  for (let i = 0; i < rows.length; i += 10)
+    await c.query(`INSERT INTO movement.removal VALUES ` + rows.slice(i, i + 10)
+      .map(f => `('${f.part.replace(/'/g, "''")}', ${f.round}, ${f.dx}, 0.0, ${f.dz}, NULL)`).join(', '));
+}
+await syncRemovalTable();
 const maxRound = Math.max(...removals.map(r => r.round));
 $('v-rounds').textContent = `${maxRound} (${removals.length} parts)`;
 
@@ -367,7 +385,7 @@ function renderRounds(liveUpTo) {
         while (roundShown < rr) { await stepOne(); await sleep(120); }
       } else if (rr < roundShown) {
         // collapse back, then re-explode up to this round
-        roundShown = 0; refreshTargets(); renderRounds(0);
+        roundShown = 0; refreshTargets(); await syncRemovalTable(); renderRounds(0);
         $('b-take').disabled = true; $('b-step').disabled = true; $('b-assemble').disabled = false;
         setStatus(`re-exploding to round ${rr}…`);
         await sleep(700);
@@ -388,7 +406,6 @@ function targetOffset(part) {
   const k = (levels[part] || 1) * spread;
   return new THREE.Vector3(r.dx * k, 0, r.dz * k);
 }
-let roundShown = 0;
 const _tgt = {};   // part -> THREE.Vector3
 function refreshTargets() {
   const out = new Set(removals.filter(r => r.round <= roundShown).map(r => r.part));
@@ -409,8 +426,10 @@ async function stepOne() {
   roundShown++;
   refreshTargets();
   startJitter();
+  await syncRemovalTable();
   setStatus(`round ${roundShown}: DB released ${removals.filter(r => r.round === roundShown).map(r => r.part).join(', ')}`);
   renderRounds(roundShown);
+  if (pinned) refreshPinCard();
   if (roundShown >= maxRound) { $('b-take').disabled = true; $('b-step').disabled = true; setStatus('all 33 parts out — 8 rounds, golden table matched'); }
 }
 $('b-take').onclick = async () => {
@@ -419,7 +438,7 @@ $('b-take').onclick = async () => {
 };
 $('b-step').onclick = () => stepOne();
 $('b-assemble').onclick = () => {
-  roundShown = 0; refreshTargets();
+  roundShown = 0; refreshTargets(); syncRemovalTable();
   jitterParts = new Set(); jitterUntil = 0;
   renderRounds(0);
   $('b-take').disabled = false; $('b-step').disabled = false; $('b-assemble').disabled = true;
@@ -464,6 +483,34 @@ function glow(part, on) {
     }
   }
 }
+// live "who is holding this part" — one m_blockers() query against the current round state
+async function blockersOf(part) {
+  const w = wayOut[part];
+  if (!w) return null;
+  try {
+    const rows = await Q(`SELECT blocker FROM m_blockers('${part.replace(/'/g, "''")}', ${w.s})`);
+    return rows.map(r => r.blocker).sort();
+  } catch { return null; }
+}
+let blockerSeq = 0;   // guard against stale async responses racing a re-pin
+async function refreshPinCard() {
+  if (!pinned) return;
+  const i = partInfo[pinned] || {};
+  const seq = ++blockerSeq;
+  const removedNow = roundShown >= (i.round || 1e9);
+  let blHTML = '';
+  if (!removedNow && i.round) {
+    const bl = await blockersOf(pinned);
+    if (seq !== blockerSeq) return;   // a newer pin overtook this query
+    blHTML = bl && bl.length
+      ? `<div class="bl">现在被挡：<b>${bl.join('、')}</b><span class="bln">（DB m_blockers，当前 ${roundShown} 轮状态）</span></div>`
+      : `<div class="blk">未被同轴件阻挡（可能等跨轴/后续轮次）</div>`;
+  }
+  if (pinned) {
+    pickcard.innerHTML = cardHTML(pinned) + blHTML;
+    pickcard.style.display = 'block';
+  }
+}
 function cardHTML(part) {
   const i = partInfo[part] || {};
   return `<div class="nm">${part}</div>
@@ -485,7 +532,7 @@ function setPinned(part) {
   const old = pinned;
   pinned = part;
   if (old && old !== part) glow(old, false);
-  if (part) glow(part, true);
+  if (part) { glow(part, true); refreshPinCard(); }   // refreshPinCard re-renders with the DB blocker
 }
 let downXY = null;
 canvas.addEventListener('pointermove', e => {
@@ -540,7 +587,16 @@ refreshTargets();
 $('b-take').disabled = false; $('b-step').disabled = false;
 setStatus('ready — 拖拽环视，点 Take apart 看 DB 逐轮拆卸');
 window.__dbg = { partMat, removals, get roundShown() { return roundShown; },
-                 get jitter() { return { on: performance.now() < jitterUntil, parts: [...jitterParts] }; } };
+                 get jitter() { return { on: performance.now() < jitterUntil, parts: [...jitterParts] }; },
+                 screenPos(part) {
+                   const m = (partMat[part] || [])[0];
+                   if (!m) return null;
+                   m.updateWorldMatrix(true, false);
+                   const v = new THREE.Vector3(0, 0, 0);
+                   m.localToWorld(v); v.project(camera);
+                   const r = canvas.getBoundingClientRect();
+                   return { x: (v.x + 1) / 2 * r.width + r.left, y: (1 - v.y) / 2 * r.height + r.top };
+                 } };
 tick();
 </script>
 </body>
