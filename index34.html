@@ -40,6 +40,16 @@
   .legend { font-size:11px; color:var(--dim); line-height:1.7; }
   .legend b { color:var(--txt); font-weight:600; }
   @media (max-width:900px) { aside { width:100%; flex:1 1 auto; } #scene { height:60vh; } }
+  #pickcard { position:absolute; left:16px; bottom:16px; background:rgba(23,26,33,.94); border:1px solid var(--line);
+    border-radius:8px; padding:8px 12px; font-size:12px; max-width:260px; display:none; pointer-events:none; z-index:5; }
+  #pickcard .nm { color:var(--acc); font-weight:700; font-size:13px; }
+  #pickcard .mt { color:var(--dim); }
+  #pickcard .ro { margin-top:3px; }
+  #pickcard .ro b { color:var(--gold); }
+  .tip { position:absolute; background:rgba(23,26,33,.92); border:1px solid var(--line); border-radius:5px;
+    padding:2px 8px; font-size:11.5px; pointer-events:none; display:none; z-index:6; white-space:nowrap; }
+  #rounds .r { cursor:pointer; }
+  #rounds .r:hover { background:#1a2333; border-radius:5px; }
 </style>
 </head>
 <body>
@@ -52,7 +62,7 @@
   </div>
 </header>
 <main>
-  <div class="canvas-wrap"><canvas id="scene"></canvas></div>
+  <div class="canvas-wrap"><canvas id="scene"></canvas><div id="pickcard"></div><div class="tip" id="tip"></div></div>
   <aside>
     <div class="card">
       <h3>engine</h3>
@@ -77,7 +87,7 @@
       <div><b>钢 steel</b> · <b style="color:#e2554f">红宝石 ruby</b> · <b style="color:var(--gold)">镀金 gilt</b> ·
       <b style="color:#5f6c80">夹板 plate</b> · <b style="color:#4d7bd1">烤蓝 blued</b> · <b style="color:#9fb4c8">发条 spring</b></div>
       <div style="margin-top:4px">退出方向：↑ 表前（+z）· ↓ 表后（−z）· → 表冠（+x）</div>
-      <div style="margin-top:4px">拖拽旋转 · 滚轮缩放 · 右键平移</div>
+      <div style="margin-top:4px">拖拽旋转 · 滚轮缩放 · 右键平移 · <b>点零件看身份</b>（悬停显示件名，点选钉住卡片；再点同件或点空白取消）</div>
     </div>
   </aside>
 </main>
@@ -99,6 +109,9 @@ import * as duckdb from 'duckdb-wasm';
 
 const $ = id => document.getElementById(id);
 const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
+window.__PE = [];
+addEventListener('error', e => { window.__PE.push(e.message); });
+addEventListener('unhandledrejection', e => { window.__PE.push('rejection: ' + (e.reason && e.reason.message || e.reason)); });
 
 // ---------- coordinate mapping: watch (x, y, z) -> three ----------
 // watch frame: x = toward crown (3 o'clock), y = 12 o'clock, z = toward viewer (front).
@@ -242,6 +255,7 @@ for (const pc of snap.pieces) {
   const mesh = isStem ? buildStemPiece(pc.wkt, MATS[pc.material] || MATS.steel, pc.z0, pc.z1)
                       : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1);
   if (!mesh) continue;
+  mesh.material = mesh.material.clone(); // per-part material so hover glow doesn't leak to same-material parts
   movement.add(mesh);
   (partMat[pc.part] = partMat[pc.part] || []).push(mesh);
 }
@@ -342,6 +356,20 @@ function renderRounds(liveUpTo) {
     d.className = 'r' + (liveUpTo >= rr ? ' live' : '');
     const dir = r => r.dz > 0 ? '↑' : r.dz < 0 ? '↓' : '→';
     d.innerHTML = `<span class="n">${rr}</span>` + g.map(r => `${r.part} <span class="out">${dir(r)}${r.dz? ' z':''}${r.dx? ' x':''}</span>`).join(' · ');
+    d.title = '点击爆炸到此轮';
+    d.onclick = async () => {
+      if (rr > roundShown) {
+        $('b-take').disabled = true; $('b-step').disabled = true; $('b-assemble').disabled = false;
+        while (roundShown < rr) { await stepOne(); await sleep(120); }
+      } else if (rr < roundShown) {
+        // collapse back, then re-explode up to this round
+        roundShown = 0; refreshTargets(); renderRounds(0);
+        $('b-take').disabled = true; $('b-step').disabled = true; $('b-assemble').disabled = false;
+        setStatus(`re-exploding to round ${rr}…`);
+        await sleep(700);
+        while (roundShown < rr) { await stepOne(); await sleep(120); }
+      }
+    };
     el.appendChild(d);
   }
 }
@@ -382,6 +410,88 @@ $('b-assemble').onclick = () => {
   setStatus('assembled');
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ---------- part picking (hover tooltip + click-to-pin card) ----------
+// tag meshes so the raycaster can identify a part
+for (const [part, ms] of Object.entries(partMat))
+  for (const m of ms) m.userData.part = part;
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+const tip = $('tip'), pickcard = $('pickcard');
+const partInfo = {};   // part -> {material, round, dir}
+for (const pc of snap.pieces) {
+  const r = removals.find(x => x.part === pc.part);
+  partInfo[pc.part] = { material: pc.material,
+    round: r ? r.round : null,
+    dir: r ? (r.dz > 0 ? '↑ 表前' : r.dz < 0 ? '↓ 表后' : '→ 表冠') : '—',
+    z: `${pc.z0} … ${pc.z1}` };
+}
+function pickAt(cx, cy) {
+  const rect = canvas.getBoundingClientRect();
+  ndc.set((cx - rect.left) / rect.width * 2 - 1, -((cy - rect.top) / rect.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObjects(movement.children, true);
+  for (const h of hits) {
+    let o = h.object;
+    while (o && !o.userData.part) o = o.parent;
+    if (o && o.userData.part) return o.userData.part;
+  }
+  return null;
+}
+let pinned = null, hovered = null, hoverGlow = null;
+function glow(part, on) {
+  if (!part) return;
+  for (const m of (partMat[part] || [])) {
+    if (m.material && m.material.emissive) {
+      if (!m.userData._em) m.userData._em = m.material.emissive.getHex();
+      m.material.emissive.setHex(on ? 0x2255aa : (m.userData._em || 0x000000));
+    }
+  }
+}
+function cardHTML(part) {
+  const i = partInfo[part] || {};
+  return `<div class="nm">${part}</div>
+    <div class="mt">${i.material || ''} · z ${i.z || ''}</div>
+    <div class="ro">${i.round ? `DB 第 <b>${i.round}</b> 轮拆出 · ${i.dir}` : '基座（base，不拆）'}</div>`;
+}
+function showHover(part, cx, cy) {
+  if (part && part !== pinned) {
+    tip.textContent = part;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    tip.style.left = (cx - rect.left + 14) + 'px';
+    tip.style.top = (cy - rect.top + 10) + 'px';
+    tip.style.display = 'block';
+  } else tip.style.display = 'none';
+}
+function setPinned(part) {
+  if (part) { pickcard.innerHTML = cardHTML(part); pickcard.style.display = 'block'; }
+  else pickcard.style.display = 'none';
+  const old = pinned;
+  pinned = part;
+  if (old && old !== part) glow(old, false);
+  if (part) glow(part, true);
+}
+let downXY = null;
+canvas.addEventListener('pointermove', e => {
+  if (downXY) return;
+  const h = pickAt(e.clientX, e.clientY);
+  if (h !== hovered) {
+    if (hovered && hovered !== pinned) glow(hovered, false);
+    hovered = h;
+    if (hovered && hovered !== pinned) glow(hovered, true);
+  }
+  showHover(hovered === pinned ? null : hovered, e.clientX, e.clientY);
+  canvas.style.cursor = hovered ? 'pointer' : 'grab';
+});
+canvas.addEventListener('pointerdown', e => { downXY = [e.clientX, e.clientY]; });
+canvas.addEventListener('pointerup', e => {
+  const wasDown = downXY; downXY = null;
+  if (!wasDown) return;
+  if (Math.hypot(e.clientX - wasDown[0], e.clientY - wasDown[1]) > 5) return; // it was a drag
+  const part = pickAt(e.clientX, e.clientY);
+  setPinned(part === pinned ? null : part);
+  tip.style.display = 'none';
+});
 
 // ---------- resize + render loop ----------
 function resize() {
