@@ -1031,6 +1031,7 @@ let stallRun = 0;              // P1-3: consecutive substeps without wheel advan
 const N_STALL = 40;            // P1-3: "stalled" threshold (documented in the card UI)
 let expCap = { baseline: null, modified: null };   // P1-3: saved real evidence
 let lastProbe = null;          // P1-3: result of the last beat probe
+let currentMapStats = null;    // P1-3: the stats of the esc_map currently in force
 
 const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(2) + ' mm';
 const fmtMap = m => `${Number(m.n).toLocaleString()} states (${Number(m.blocked).toLocaleString()} blocked) / ${m.ms} ms` +
@@ -1076,6 +1077,7 @@ async function buildEscMap(off) {
   const rows = (await c.query(`SELECT wheel_deg, fork_deg, blocked FROM esc_map ORDER BY 1, 2`)).toArray();
   const map = new Map();
   for (const r of rows) map.set(Number(r.wheel_deg) + '|' + Number(r.fork_deg), Number(r.blocked));
+  currentMapStats = { off, n: Number(info.n), blocked: Number(info.b), lock0: Number(lock0row.l) };
   return { off, n: Number(info.n), blocked: Number(info.b), free: Number(info.n) - Number(info.b),
            lock0: Number(lock0row.l), deadCols: Number(deadrow.d), map,
            ms: Math.round(performance.now() - t0) };
@@ -1136,6 +1138,7 @@ function resetMotion() {
   lastTrace = null; lastTraceDraw = 0;
   drawTrace();
   $('b-copy-sql').disabled = true;
+  refreshFaultChip();
   render3D(0, false);
 }
 
@@ -1257,10 +1260,143 @@ async function doRebuild(off, my, opts = {}) {
       (opts.probe ? ' · 40-beat probe done' : '');
   }
   if (my === runId) {
+    // P1-3: record the real evidence for this rebuild (probe = the 40-beat run)
+    if (opts.capture === 'baseline') expCap.baseline = finalizeCap(mapRes, lastProbe);
+    else if (opts.capture === 'modified') expCap.modified = finalizeCap(mapRes, lastProbe);
+    updateCompareView();
     setExpBusy(false);
     setStatus('ready — every frame is one SQL query');
   }
+  if (my === runId) refreshFaultChip();
 }
+
+// P1-3: turn a rebuild result into a saved evidence record — every field is a
+// real query result (map stats, the full 4753-cell verdict snapshot, the
+// 40-beat probe) plus the experiment parameter, capture time and duckdb
+// version, so a screenshot of the compare view is self-documenting.
+function finalizeCap(mapRes, probe) {
+  return {
+    off: mapRes.off,
+    duck: duckVer,
+    at: new Date().toISOString(),
+    n: mapRes.n, blocked: mapRes.blocked, free: mapRes.free,
+    rate: mapRes.blocked / mapRes.n,
+    lock0: mapRes.lock0, deadCols: mapRes.deadCols,
+    map: mapRes.map,          // real per-cell verdicts: "wheel|fork" → 0/1
+    probe,                    // { beats, samples[{beat,disp}], maxStallRun, stalled, finalWheel }
+  };
+}
+
+// P1-3: side-by-side Baseline vs Modified view + the "Show difference" block.
+// Every figure is read from the two saved SQL snapshots; nothing is fitted or
+// synthesized.
+function updateCompareView() {
+  const cmp = $('exp-compare');
+  const both = expCap.baseline && expCap.modified;
+  $('exp-diff').disabled = !both;
+  $('exp-copy').disabled = !(expCap.baseline || expCap.modified);
+  if (!expCap.baseline && !expCap.modified) { cmp.style.display = 'none'; cmp.innerHTML = ''; return; }
+  const pct = v => (v * 100).toFixed(1) + '%';
+  const col = (t, cap) => {
+    if (!cap) return `<div class="cmp-col"><h3>${t}</h3><div class="hint">not captured — press <b>${t}</b> to record a 40-beat probe</div></div>`;
+    const pr = cap.probe;
+    const mean = pr && pr.samples.length ? pr.samples.reduce((a, b) => a + b.disp, 0) / pr.samples.length : null;
+    return `<div class="cmp-col"><h3>${t} — ${fmtOff(cap.off)}</h3>
+      <div class="cmp-row"><span>states</span><span class="cv">${cap.n.toLocaleString()}</span></div>
+      <div class="cmp-row"><span>blocked</span><span class="cv">${cap.blocked.toLocaleString()}</span></div>
+      <div class="cmp-row"><span>blocked rate</span><span class="cv">${pct(cap.rate)}</span></div>
+      <div class="cmp-row"><span>lock @ fork 0</span><span class="cv">${pct(cap.lock0)}</span></div>
+      <div class="cmp-row"><span>dead columns (±10°)</span><span class="cv">${cap.deadCols}</span></div>
+      <div class="cmp-row"><span>mean Δ°/beat (probe)</span><span class="cv">${mean === null ? '—' : mean.toFixed(2)}</span></div>
+      <div class="cmp-row"><span>max stall run (probe)</span><span class="cv">${pr ? pr.maxStallRun : '—'}</span></div>
+      <div class="cmp-row"><span>stalled (≥ N=${N_STALL})</span><span class="cv">${pr && pr.stalled ? 'yes' : 'no'}</span></div>
+      <div class="cmp-row"><span>duckdb</span><span class="cv">${cap.duck}</span></div>
+      <div class="cmp-row"><span>captured</span><span class="cv">${new Date(cap.at).toLocaleTimeString()}</span></div>
+    </div>`;
+  };
+  let html = `<div class="cmp-grid">${col('Baseline', expCap.baseline)}${col('Modified', expCap.modified)}</div>`;
+  if (both && cmp.dataset.diff === '1') {
+    let toBlocked = 0, toFree = 0;
+    for (const [k, v] of expCap.baseline.map) {
+      const w = expCap.modified.map.get(k);
+      if (w !== undefined && w !== v) { if (w === 1) toBlocked++; else toFree++; }
+    }
+    const mean = pr => pr && pr.samples.length ? pr.samples.reduce((a, b) => a + b.disp, 0) / pr.samples.length : null;
+    const mb = mean(expCap.baseline.probe), mm = mean(expCap.modified.probe);
+    const db = expCap.modified.blocked - expCap.baseline.blocked;
+    html += `<div class="cmp-diff"><b>Show difference:</b>
+      ${toBlocked + toFree === 0
+        ? 'no map cell changed verdict — this offset moved no grid boundary'
+        : `${toBlocked.toLocaleString()} cells flipped to blocked, ${toFree.toLocaleString()} to free (of ${expCap.baseline.n.toLocaleString()})`}
+      · blocked ${expCap.baseline.blocked.toLocaleString()} → ${expCap.modified.blocked.toLocaleString()} (Δ ${db >= 0 ? '+' : ''}${db.toLocaleString()})
+      · rate ${pct(expCap.baseline.rate)} → ${pct(expCap.modified.rate)}
+      · mean Δ°/beat ${mb === null || mm === null ? '—' : mb.toFixed(2) + ' → ' + mm.toFixed(2)}
+      ${expCap.modified.deadCols > 0 ? `<br>⚠ the modified map has ${expCap.modified.deadCols} fully blocked wheel-phase columns — if the wheel reaches one, no fork angle in ±10° releases it: that is the stall condition the solver enforces, not an animation.` : ''}
+      ${expCap.modified.lock0 === 0 ? '<br>⚠ lock @ fork 0 is 0 in the modified map — the escapement can no longer hold the wheel at rest (free run).' : ''}
+    </div>`;
+  }
+  cmp.innerHTML = html;
+  cmp.style.display = 'block';
+}
+
+// P1-3: fault display — strictly gated on real data. The stalled label appears
+// only when stallRun (consecutive substeps without wheel advance) has reached
+// N_STALL; the free-run label only while the current map reports zero blocked
+// states. Both clear on any wheel advance, rebuild or reset — nothing here is
+// a pre-baked fault animation.
+function refreshFaultChip() {
+  const el = $('exp-fault');
+  if (stallRun >= N_STALL) {
+    el.textContent = `▲ STALLED BY SQL SOLVER — no wheel advance for ${stallRun} consecutive substeps (threshold N=${N_STALL}) at wheel ≈ ${(wheel % PITCH).toFixed(1)}°, fork ≈ ${typeof _lastFork === 'number' ? _lastFork.toFixed(1) : '0.0'}° — the rebuilt map blocks every reachable fork angle here`;
+    el.className = 'exp-fault err';
+    el.style.display = 'block';
+  } else if (currentMapStats && currentMapStats.lock0 === 0) {
+    el.textContent = `○ LOCK LOST (FREE RUN) — the rebuilt map locks 0% of wheel phases at fork = 0 at ${fmtOff(entryOff)} (M0 lock criterion is ≥ 35%): the escapement can no longer hold the wheel at rest; it free-runs between whatever phases still collide`;
+    el.className = 'exp-fault warn';
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// P1-3: the compare toggle and the copyable summary (parameters, capture time,
+// duckdb version — everything in the compare view, for screenshots/sharing).
+$('exp-diff').onclick = () => {
+  if (!expCap.baseline || !expCap.modified) return;
+  const cmp = $('exp-compare');
+  cmp.dataset.diff = cmp.dataset.diff === '1' ? '' : '1';
+  $('exp-diff').textContent = cmp.dataset.diff === '1' ? 'Hide difference' : 'Show difference';
+  updateCompareView();
+};
+$('exp-copy').onclick = async () => {
+  const line = cap => cap
+    ? `off=${fmtOff(cap.off)} duck=${cap.duck} at=${cap.at} states=${cap.n} blocked=${cap.blocked} rate=${(cap.rate * 100).toFixed(1)}% lock0=${(cap.lock0 * 100).toFixed(1)}% deadCols=${cap.deadCols} probeBeats=${cap.probe ? cap.probe.beats : '—'} maxStallRun=${cap.probe ? cap.probe.maxStallRun : '—'} stalled=${cap.probe ? cap.probe.stalled : '—'} meanDpb=${cap.probe && cap.probe.samples.length ? (cap.probe.samples.reduce((a, b) => a + b.disp, 0) / cap.probe.samples.length).toFixed(2) : '—'}`
+    : 'not captured';
+  const txt = `watchduck · Break the Watch\n` +
+    `parameter: entry pallet stone offset along its long axis (mm); 0 = baseline\n` +
+    `duckdb ${duckVer}\n` +
+    `baseline: ${line(expCap.baseline)}\n` +
+    `modified: ${line(expCap.modified)}`;
+  const btn = $('exp-copy');
+  let okCopy = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(txt);
+      okCopy = true;
+    }
+  } catch (e) { okCopy = false; }
+  if (!okCopy) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      okCopy = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (e2) { okCopy = false; }
+  }
+  btn.textContent = okCopy ? 'copied ✓' : 'copy failed';
+  setTimeout(() => { btn.textContent = 'Copy summary (params · time · duckdb)'; }, 1200);
+};
 
 // P1-2: the "SQL doing the physics" panel, regenerated after each rebuild so it
 // always shows the statement actually in force (including the current offset).
@@ -1666,7 +1802,7 @@ async function physicsStep(vSec) {
   // the trace panel is a downsampled view: refresh at ≤10 Hz. The queries themselves
   // still run at full cadence — low UI sampling never reduces solver executions.
   const now = performance.now();
-  if (now - lastTraceDraw >= 100) { lastTraceDraw = now; drawTrace(); }
+  if (now - lastTraceDraw >= 100) { lastTraceDraw = now; drawTrace(); refreshFaultChip(); }
   const DT = 0.008;
   if (!blocked) {
     // a real escape wheel snaps through its release almost instantly

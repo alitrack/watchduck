@@ -23,7 +23,6 @@
          border:1px solid var(--line); color:var(--txt); background:var(--panel); transition:border-color .15s, transform .15s; }
   .cta.primary { border-color:var(--acc); color:var(--acc); font-weight:700; }
   .cta:hover { border-color:var(--acc); color:var(--acc); transform:translateY(-1px); }
-  .cta.soon { opacity:.45; cursor:not-allowed; }
   .cta-note { font-size:11px; color:var(--dim); margin-top:9px; line-height:1.6; max-width:560px; }
   figure.preview { flex:1 1 380px; max-width:520px; min-width:300px; margin:0; background:var(--panel);
                    border:1px solid var(--line); border-radius:12px; padding:10px; position:relative; }
@@ -73,17 +72,19 @@
     <div class="ctas">
       <a class="cta primary" href="escapement3d.html">Run Live SQL Simulation →</a>
       <a class="cta" href="04_take_apart.sql" target="_blank" rel="noopener">View the SQL</a>
-      <span class="cta soon" role="button" aria-disabled="true"
-            title="Opens in a later showcase stage: it will change one real geometric parameter, rebuild the SQL geometry, and show the DB verdicts differ — no faked faults.">
-        Break the Watch · opens in a later stage
-      </span>
+      <a class="cta" href="escapement3d.html#experiment"
+         title="Shift the entry pallet stone by a real amount (mm), rebuild the SQL collision map and prepared query, and watch the database verdicts change — including faults the solver actually produces.">
+        Break the Watch →
+      </a>
     </div>
     <div class="cta-note">
       "Run Live SQL Simulation" opens the 3D escapement: first load downloads the ~40 MB
       DuckDB-WASM engine (cached afterwards). "View the SQL" opens <code>04_take_apart.sql</code>,
       the disassembly predicates exactly as the browser executes them.
-      <b>Break the Watch</b> is disabled until a later stage wires one real geometry parameter
-      through the same SQL chain.
+      <b>Break the Watch</b> opens the 3D page with the experiment panel open: one real
+      geometric parameter (entry pallet stone offset, mm) regenerates the SQL geometry,
+      rebuilds the collision map and the prepared query, and shows the database verdicts
+      change — stalls and lock loss included, both produced by the solver, none faked.
     </div>
   </div>
 
