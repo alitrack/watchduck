@@ -114,7 +114,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as duckdb from 'duckdb-wasm';
 
 const $ = id => document.getElementById(id);
-const BUILD_ID = '20261113-earcutfix-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
+const BUILD_ID = '20261113-flipfix-hud';  // deploy-time fingerprint: show this to Hermes to prove which build is rendered
 const setStatus = (m, cls) => { const el = $('status'); el.textContent = m; el.className = cls || ''; };
 window.__PE = [];
 addEventListener('error', e => { window.__PE.push(e.message); });
@@ -122,8 +122,12 @@ addEventListener('unhandledrejection', e => { window.__PE.push('rejection: ' + (
 
 // ---------- coordinate mapping: watch (x, y, z) -> three ----------
 // watch frame: x = toward crown (3 o'clock), y = 12 o'clock, z = toward viewer (front).
-// three: (x, -y, z). Clockwise on the watch face => -z rotation in three (same as index.html).
-const MAP = (x, y) => [x, -y];
+// three: (x, y, z) — no flip: the dial front sits at +z and the default camera is on +z,
+// so keeping watch +y as three +y puts 12 o'clock at the TOP of the screen and the crown
+// (watch +x) on the right, exactly like a real watch face. (The old (x,-y) mapping was
+// copied from index.html, whose dial front is on the −z side — it rendered this dial upside
+// down: 12 at screen bottom, the seconds subdial at the top, hands walking anti-clockwise.)
+const MAP = (x, y) => [x, y];
 
 // ---------- materials (dark theme, high contrast) ----------
 const MATS = {
@@ -210,10 +214,10 @@ function buildMesh(rings, material, z0, z1) {
     const pos = [], idx = [];
     rings.forEach(ring => {
       const flat = [], holeIdx = [];
-      ring.forEach(p => flat.push(p[0], -p[1]));
+      ring.forEach(p => flat.push(p[0], p[1]));
       const tris = (typeof earcut === 'function') ? earcut(flat, holeIdx.length ? holeIdx : null) : (function(){ const t=[]; for(let i=1;i<flat.length/2-1;i++) t.push(0,i,i+1); return t; })();
       const base = pos.length / 2;
-      ring.forEach(p => pos.push(p[0], -p[1], 0));
+      ring.forEach(p => pos.push(p[0], p[1], 0));
       tris.forEach(t => idx.push(base + t));
     });
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -240,7 +244,7 @@ function buildStemPiece(wkt, material, z0, z1) {
   for (const [a, b] of ring) r += Math.hypot(a - cy, b - cz);
   r /= ring.length;
   m.scale.set(z1 - z0, r, r);
-  m.position.set((z0 + z1) / 2, -cy, cz); // three (y=-watch y, z=watch z)
+  m.position.set((z0 + z1) / 2, cy, cz); // three (x=watch x, y=watch y, z=watch z)
   return m;
 }
 
@@ -268,6 +272,21 @@ for (const pc of snap.pieces) {
                       : buildMesh(parseWKT(pc.wkt), MATS[pc.material] || MATS.steel, pc.z0, pc.z1);
   if (!mesh) continue;
   mesh.material = mesh.material.clone(); // per-part material so hover glow doesn't leak to same-material parts
+  // hands spin about their OWN bore, not the dial centre: the seconds hand lives on the
+  // small fourth-wheel subdial, so shift the geometry until its bore ring is the local origin
+  if (/hand$/.test(pc.part)) {
+    const holes = parseWKT(pc.wkt).slice(1);
+    if (holes.length) {
+      const h = holes[0];
+      let bx = 0, by = 0;
+      for (const [x, y] of h) { bx += x; by += y; }
+      bx /= h.length; by /= h.length;
+      if (Math.hypot(bx, by) > 0.05) {
+        mesh.geometry.translate(-bx, -by, 0);   // geometry is in three coords (x = watch x, y = watch y)
+        mesh.position.set(bx, by, pc.z0);
+      }
+    }
+  }
   mesh.userData.rest = mesh.position.clone();   // where this mesh sits when assembled
   movement.add(mesh);
   (partMat[pc.part] = partMat[pc.part] || []).push(mesh);
@@ -454,8 +473,8 @@ function targetOffset(part) {
   // twist the fan direction by a deterministic per-part angle (±63°) so parts with
   // near-identical centroids (Barrel family, screw clusters) land in different sectors
   const rt = rotXY(rd.x, rd.y, nameAngle(part) * 0.35);
-  // watch (x, y) -> three (x, -y)
-  return new THREE.Vector3(ax + rt.x * fan, -rt.y * fan, az);
+  // watch (x, y) -> three (x, y)
+  return new THREE.Vector3(ax + rt.x * fan, rt.y * fan, az);
 }
 const _tgt = {};   // part -> THREE.Vector3 (explode OFFSET from rest, not an absolute position)
 const V0 = new THREE.Vector3();
