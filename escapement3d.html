@@ -168,7 +168,7 @@
          through WKT → esc_map → p_frame → 3D meshes. Cards stay honest: every figure
          shown in it is read from the rebuilt SQL, never synthesized. -->
     <details class="card" id="exp-details" open>
-      <summary class="exp-summary" id="exp-summary">Break the Watch · one real parameter <span class="tr-chev" id="exp-chev">▾</span></summary>
+      <summary class="exp-summary" id="exp-summary" role="button" tabindex="0" aria-expanded="true">Break the Watch · one real parameter <span class="tr-chev" id="exp-chev">▾</span></summary>
       <div id="exp-card">
         <div class="hint" style="padding:0 0 6px">
           The entry pallet stone, shifted along its long axis (mm). Applying a value regenerates the
@@ -201,7 +201,7 @@
       </div>
     </details>
     <div class="card" id="trace-card">
-      <h2 class="trace-toggle" id="trace-toggle">Why did it tick? <span class="tr-chev" id="trace-chev">▾</span></h2>
+      <h2 class="trace-toggle" id="trace-toggle" role="button" tabindex="0" aria-expanded="true">Why did it tick? <span class="tr-chev" id="trace-chev">▾</span></h2>
       <div id="trace-body">
         <div class="row"><span>last verdict</span><span class="v" id="t-verdict">—</span></div>
         <div class="row"><span>statement (prepared)</span><span class="v" id="t-sql">—</span></div>
@@ -1946,19 +1946,29 @@ $('b-step').onclick = async () => {
 };
 $('b-reset').onclick = () => resetMotion();   // P1-2: shared with the rebuild pipeline
 $('b-copy-sql').onclick = () => { if (lastTrace) copyTraceSQL(lastTrace); };
-// the trace panel collapses via its header
-$('trace-toggle').onclick = () => {
+// the trace panel collapses via its header.
+// P2-1 (F07 follow-through from the P0 review): the header is a real button for
+// keyboard users too — role=button + tabindex live in the HTML, and Enter/Space
+// keydown activates it (a plain <h2> has no native key activation, so this
+// handler is the only keyboard path).
+function toggleTracePanel() {
   const tb = $('trace-body');
   const open = tb.style.display !== 'none';
   tb.style.display = open ? 'none' : 'block';
   $('trace-chev').textContent = open ? '▸' : '▾';
-};
+  $('trace-toggle').setAttribute('aria-expanded', String(!open));
+}
+$('trace-toggle').onclick = toggleTracePanel;
+$('trace-toggle').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTracePanel(); }
+});
 // P0-4: narrow screens (e.g. 390 px) — collapse the diagnostics and the trace body;
 // the 3D view + main controls + the boot banner stay first. Desktop keeps them open.
 if (window.innerWidth < 600) {
   const dd = $('diag-details'); if (dd) dd.removeAttribute('open');
   const tb = $('trace-body'); if (tb) tb.style.display = 'none';
   const tc = $('trace-chev'); if (tc) tc.textContent = '▸';
+  const tt = $('trace-toggle'); if (tt) tt.setAttribute('aria-expanded', 'false');
 }
 // P1: the experiment card is open on desktop, collapsed on narrow screens UNLESS the
 // page was opened via #experiment (the hub's "Break the Watch" link), which force-opens
@@ -1967,12 +1977,25 @@ const expDetails = $('exp-details'), expChev = $('exp-chev');
 if (expDetails) {
   if (location.hash === '#experiment') expDetails.setAttribute('open', '');
   else if (window.innerWidth < 600) expDetails.removeAttribute('open');
+  if (expChev) expChev.textContent = expDetails.hasAttribute('open') ? '▾' : '▸';
+  $('exp-summary').setAttribute('aria-expanded', String(expDetails.hasAttribute('open')));
 }
-$('exp-summary').onclick = () => {
+// P2-1 (F07 follow-through): one deterministic toggle for mouse AND keyboard.
+// The click listener preventDefaults so the native <details> summary toggle is
+// suppressed (otherwise the native toggle and the manual attribute toggle fight
+// each other: the manual side sees the pre-click state, then the native side
+// flips whatever the manual side just set). Enter/Space on keydown is the
+// keyboard path; preventDefault there stops the native key-activation click.
+function toggleExpCard() {
   const open = expDetails.hasAttribute('open');
   if (open) expDetails.removeAttribute('open'); else expDetails.setAttribute('open', '');
   if (expChev) expChev.textContent = open ? '▸' : '▾';
-};
+  $('exp-summary').setAttribute('aria-expanded', String(!open));
+}
+$('exp-summary').onclick = e => { e.preventDefault(); toggleExpCard(); };
+$('exp-summary').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpCard(); }
+});
 if (location.hash === '#experiment' && window.innerWidth < 600)
   setTimeout(() => $('exp-card').scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 400);
 render3D(0, false);
