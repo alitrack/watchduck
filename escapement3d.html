@@ -21,7 +21,7 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
   .card h2 { font-size:12px; margin:0 0 8px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; font-weight:600; }
   .row { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:13px; }
-  .row .v { color:var(--acc); } .row .v.ok { color:var(--good); } .row .v.err { color:var(--bad); }
+  .row .v { color:var(--acc); } .row .v.ok { color:var(--good); } .row .v.err { color:var(--bad); } .row .v.warn { color:#e0a93e; }
   #v-parts b { color:var(--txt); font-weight:600; } #v-parts .ok { color:var(--good); } #v-parts .err { color:var(--bad); } #v-parts .selfx { color:#e0a93e; }
   .btns { display:flex; gap:8px; flex-wrap:wrap; }
   button { font:inherit; font-size:12.5px; background:#1e2330; color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; }
@@ -81,6 +81,7 @@
       <div class="row"><span>collision map</span><span class="v" id="v-map">—</span></div>
       <div class="row"><span>SQL queries / frame</span><span class="v" id="v-q">—</span></div>
       <div class="row" id="status"><span>state</span><span class="v" id="v-state">booting</span></div>
+      <div class="row"><span>build</span><span class="v" id="v-build">—</span></div>
     </div>
     <div class="card">
       <h2>Watch</h2>
@@ -104,6 +105,7 @@
       <div class="row"><span>cross-check</span><span class="v" id="v-ver2">—</span></div>
       <div class="row" style="font-size:11px;line-height:1.5"><span style="grid-column:1/-1" id="v-parts">—</span></div>
       <div class="row"><span>3D interference (per frame)</span><span class="v" id="v-clash">idle</span></div>
+      <div class="row"><span>3D cross-check (CGAL worker)</span><span class="v" id="v-3dver">booting…</span></div>
       <div class="btns" style="margin-top:8px"><button id="b-solid" disabled>DB solids: off</button></div>
       <div class="hint">solids = wheel rim · 2 pallet stones · lever · balance rim — the wireframe you toggle is read back from the verified DB table</div>
     </div>
@@ -126,6 +128,7 @@
 </footer>
 
 <script type="module">
+const BUILD_ID = '20261114-3dverify-mw';   // read back from the HUD to prove which build rendered
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0/+esm';
@@ -1026,6 +1029,79 @@ window.__wd = { c };
 let wheel = 0, beats = 0, running = false, showMap = false;
 let freeFrames = 0, frames = 0, lastT = 0;
 let _lastFork = 0, _lastBlocked = false;
+
+// ---------- 3D cross-verification in a Web Worker (task #2026110903 deliverable) ----------
+// Independent engine (SFCGAL 2.3.0 in wasm, CGAL pure-exact Gmpq kernel) recomputes the
+// escapement clash as a REAL volumetric intersection, one frame behind the 2D DuckDB
+// grid. It is a VERIFICATION signal, not the driver — if the two engines ever disagree
+// the HUD turns red. Off by design when the 2526KB wasm can't load (no CDN, vendored).
+let _3dWorker = null, _3dReady = false, _3dTickSeq = 0, _3dLatest = null, _3dDiverge = null;
+const $3dver = () => $('v-3dver');
+try {
+  // module worker: the script uses top-level await (wasm boot) + dynamic import —
+  // a classic worker dies at the first `import`/`await` with a bare SyntaxError
+  // (verified in real Chrome: "Unexpected token 'import'" at the top-level await).
+  _3dWorker = new Worker('./3d-verify-worker.mjs', { type: 'module' });
+  _3dWorker.onmessage = (e) => {
+    const d = e.data;
+    if (d.type === 'ready') { _3dReady = true; $3dver().textContent = `ready · ${d.solids} solids · sfcgal ${d.sfcgal}`; return; }
+    if (d.type === 'error') { $3dver().textContent = 'worker error'; $3dver().classList.add('err'); $3dver().title = d.msg; return; }
+    if (d.type === 'verdict') {
+      _3dLatest = d;
+      _3dInFlight = Math.max(0, _3dInFlight - 1);
+      _3dFlushPending();                    // latest state was held while this one cooked
+      if (d.noSolid) { $3dver().textContent = 'no solid'; return; }
+      // staleness guard: the 3D tail (deep-mesh blocked cells, ~90-300ms) can lag the
+      // 2D driver a couple of ticks; if the last verdict is >2 ticks behind the one we
+      // sent, say "lagging" rather than present a stale verdict as the current check.
+      const behind = _3dTickSeq - (d.seq || 0);
+      if (behind > 2) {
+        $3dver().textContent = `lagging ${behind} tick…`;
+        $3dver().classList.remove('ok', 'err', 'warn');
+        return;
+      }
+      if (d.divKind === 'real') {
+        // a fault: the two engines disagree on contact where it MATTERS
+        _3dDiverge = d;
+        $3dver().textContent = `DIVERGED @ ${(+d.wheel).toFixed(2)}°/${(+d.fork).toFixed(1)}°`;
+        $3dver().classList.remove('ok', 'warn'); $3dver().classList.add('err');
+      } else if (d.divKind === 'boundary') {
+        // touching, sub-threshold volume — the documented 6.9e-10 contact cell
+        _3dDiverge = d;
+        $3dver().textContent = `boundary touch @ ${(+d.wheel).toFixed(2)}°/${(+d.fork).toFixed(1)}°`;
+        $3dver().classList.remove('ok', 'err'); $3dver().classList.add('warn');
+      } else {
+        $3dver().textContent = `verified ${d.checked} · ${d.clash ? 'clash' : 'clear'} · ${d.ms.toFixed(0)}ms`;
+        $3dver().classList.remove('err', 'warn'); $3dver().classList.add('ok');
+      }
+    }
+  };
+  _3dWorker.onerror = (e) => { $3dver().textContent = 'worker load failed'; $3dver().classList.add('err'); $3dver().title = String(e.message); };
+} catch (e) { $3dver().textContent = 'worker unsupported'; $3dver().title = String(e); }
+// Throttled, in-flight-gated feed. The page's virtual clock runs ~2.3x wall time, so
+// per-sub-step feeding would push ~27 3D booleans/s at ~35ms each — an unbounded
+// backlog where the "lagging" guard just flashes forever. The 3D check is a
+// one-frame-behind VERIFICATION signal, not a per-sub-step driver: send at most ONE
+// tick while none is in flight, keep the latest state as pending, flush on verdict.
+// A watchdog unblocks a stuck Worker so the feed (and the HUD) can never jam.
+let _3dLastSent = 0, _3dPending = null, _3dInFlight = 0, _3dSentAt = 0;
+const _3dFlushPending = () => {
+  if (_3dPending && _3dInFlight <= 0 && performance.now() - _3dLastSent >= 40) {
+    const p = _3dPending; _3dPending = null;
+    _3dLastSent = performance.now(); _3dInFlight++; _3dSentAt = performance.now();
+    _3dWorker.postMessage({ type: 'tick', wheel: p.w, fork: p.f, blocked: p.b, seq: ++_3dTickSeq });
+  }
+};
+const feed3dThrottled = (w, f, blocked) => {
+  if (!_3dWorker || !_3dReady) return;
+  // watchdog: a verdict takes at most a couple of tick budgets; if it never came,
+  // the Worker is wedged — stop pretending it's busy.
+  if (_3dInFlight > 0 && performance.now() - _3dSentAt > 800) _3dInFlight = 0;
+  if (_3dInFlight > 0 || performance.now() - _3dLastSent < 83) { _3dPending = { w, f, b: blocked }; return; }
+  _3dLastSent = performance.now(); _3dInFlight++; _3dSentAt = performance.now();
+  _3dWorker.postMessage({ type: 'tick', wheel: w, fork: f, blocked, seq: ++_3dTickSeq });
+};
+
 // diagnostic snapshot for injected scripts (module-scope lets are not on window)
 window.__wd3d = () => ({
   wheel, beats, running, frames,
@@ -1039,7 +1115,10 @@ window.__wd3d = () => ({
   solid: (typeof solidInfo !== 'undefined') ? solidInfo : null,
   solidVisible: (typeof SOLID_PARTS !== 'undefined' && SOLID_PARTS[0]) ? SOLID_PARTS[0].overlay.visible : null,
   clash3d: (typeof _clash3d !== 'undefined') ? _clash3d : null,
+  build: BUILD_ID,
+  worker3d: { ready: _3dReady, latest: _3dLatest, diverge: _3dDiverge, feed: { inFlight: _3dInFlight, pending: !!_3dPending, lastSentAge: _3dLastSent ? performance.now() - _3dLastSent : null, sent: _3dTickSeq } },
 });
+$('v-build').textContent = BUILD_ID;
 
 // ---------- tick sound (tiny WebAudio click, unlocked by the Start click) ----------
 let actx = null;
@@ -1118,6 +1197,11 @@ async function loop() {
   if (last) {
     updateHud(vClock);
     render3D(last.fork, last.blocked);
+    // 3D cross-verify: one volumetric check per RENDER frame, latest state —
+    // the Worker is the one-frame-behind verification layer, not the per-sub-step driver.
+    // Must use last.fork/last.blocked (this frame's SQL verdict), NOT _lastFork/_lastBlocked
+    // (still the previous frame's — render3D assigns them AFTER updateHud runs).
+    feed3dThrottled(wheel, last.fork, last.blocked);
   }
   setTimeout(loop, 16);
 }

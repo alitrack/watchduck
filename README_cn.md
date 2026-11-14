@@ -11,7 +11,7 @@
 [**在线演示 → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/)（导航首页，三选一）：
 
 - **[index34.html — Ep5 全机芯（34 零件 / 107 件）](https://alitrack.github.io/watchduck/index34.html)**——完整机芯 3D，拆卸循环 `m_blocked()` 直接在浏览器 DuckDB-WASM 里逐轮跑 SQL，8 轮黄金表浏览器内复现。几何是 868KB 预求解快照（wasm 单线程线性内存 ~256MB 装不下 107 件现场宏生成，OOM 实测），相位烘焙在几何里，但每条拆卸判决仍是浏览器里的一条 SQL。
-- **[escapement3d.html — 3 零件擒纵组 · 3D](https://alitrack.github.io/watchduck/escapement3d.html)**——立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，实时走针，可拖拽旋转；~7.9 万次 `ST_Intersects` 现场建碰撞表，递归 SQL 逐 tick 求解。
+- **[escapement3d.html — 3 零件擒纵组 · 3D](https://alitrack.github.io/watchduck/escapement3d.html)**——立体金属擒纵轮 + 红宝石叉石 + 摆轮游丝，实时走针，可拖拽旋转；~7.9 万次 `ST_Intersects` 现场建碰撞表，递归 SQL 逐 tick 求解。HUD 里的 **3D cross-check** 行是独立验证：一个 Web Worker 跑 SFCGAL 2.3.0（WebAssembly，CGAL 纯精确 Gmpq kernel），用*同一套几何*把每 tick 的碰撞重算成**真正的体积交集**——旋转后的轮齿棱柱 × 两枚叉石棱柱，滞后 2D SQL 判定一帧。绿=两引擎一致；琥珀=接触边界格（相触、体积低于阈值）；红=值得看一眼的分歧。2D 网格仍是驱动者，worker 只是校验，不是引擎。
 - **[index2d.html — 2D 工程视图](https://alitrack.github.io/watchduck/index2d.html)**——同一引擎，正交轮廓，碰撞态在图上标红。
 
 每个页面都是自包含静态 HTML（无构建、无后端），首次加载下载约 40 MB 的 DuckDB-WASM + spatial 扩展，之后离线可用。
@@ -43,6 +43,9 @@ SELECT ST_Intersects(
 ```
 index.html            导航首页（三张卡片，无引擎，秒开）
 escapement3d.html     3 零件擒纵组 3D 视图（纯静态，无构建步骤）
+3d-verify-worker.mjs  escapement 页的独立 3D 交叉校验（Web Worker）
+sfcgal3d_32fix.wasm.js SFCGAL 2.3.0 in wasm（CGAL Gmpq kernel），本地化——无 CDN
+sfcgal3d_32fix.wasm.wasm 其 wasm 二进制（import.meta.url 在 worker 里解析）
 index2d.html          3 零件擒纵组 2D 工程视图
 index34.html          Ep5 34 零件全机芯 + 浏览器内 wasm 实时拆卸
 movement_snapshot.json  Ep5 装配态快照（每件 world WKT，相位烘焙）
@@ -62,7 +65,7 @@ scripts/geometry.py   冻结的零件尺寸 + 找到这些尺寸的随机搜索
 
 - 摆轮只画了，没仿真惯性——叉按 5 Hz 三角波走（真实摆轮的相位由冲量涌现，属后续工作）。
 - 释放期间轮是匀速，不是力矩驱动。
-- 只有 2D（对应原文章 Part 1）。
+- 物理是 2D 的（对应原文章 Part 1）——但 escapement3d 页每个 tick 都用 Web Worker 里真 3D SFCGAL-in-wasm 体积测试交叉校验（HUD 的 "3D cross-check" 行），2D 降维是被持续验证的，不是假设的。
 - 齿形是凸四边形，不是摆线齿形。
 
 ## 许可

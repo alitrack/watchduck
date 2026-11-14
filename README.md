@@ -32,7 +32,7 @@ The 3D view is pure presentation — the same DuckDB collision map and one-query
 [**Live demo → alitrack.github.io/watchduck**](https://alitrack.github.io/watchduck/) — the hub page. Three demos, one engine:
 
 - **[index34.html — Ep5 full movement (34 parts / 107 pieces)](https://alitrack.github.io/watchduck/index34.html)** — the complete calibre in 3D, with the **take-apart running live in DuckDB-WASM**: the disassembly loop (`m_blocked()`, one SQL per part per round) peels 8 rounds in the browser, matching the golden table of the [watchmaker-sql Ep5 reference](https://github.com/sqlartist/watchmaker-sql). Geometry is a pre-solved 868 KB snapshot (phases baked in) because the wasm engine's ~256 MB linear memory can't build 107 macro-generated pieces live — but every take-apart verdict is still a query the browser's database makes. See [`ep5_movement/`](ep5_movement/) for the SQL port + snapshot generator.
-- **[escapement3d.html — 3-part escapement, 3D](https://alitrack.github.io/watchduck/escapement3d.html)** — Three.js rendering, solid metal escape wheel + ruby stones + balance, real-time ticking; ~79k `ST_Intersects` build the collision map live, a recursive SQL solver walks it tick by tick.
+- **[escapement3d.html — 3-part escapement, 3D](https://alitrack.github.io/watchduck/escapement3d.html)** — Three.js rendering, solid metal escape wheel + ruby stones + balance, real-time ticking; ~79k `ST_Intersects` build the collision map live, a recursive SQL solver walks it tick by tick. The **3D cross-check** row in the HUD shows an independent verification: a Web Worker runs SFCGAL 2.3.0 in WebAssembly (CGAL, pure-exact Gmpq kernel) on the *same* geometry, recomputing each tick's clash as a **real volumetric intersection** of the rotated wheel-tooth prism against both pallet-stone prisms — one frame behind the 2D SQL verdict. Green = the two engines agree; amber = a contact-boundary cell (touching, sub-threshold volume); red = a divergence worth looking at. The 2D grid still drives everything — the worker is a check, not the engine.
 - **[index2d.html — 2D engineering view](https://alitrack.github.io/watchduck/index2d.html)** — same engine, orthographic outlines, collision states marked on the drawing.
 
 Each page is a self-contained static HTML (no build, no backend):
@@ -45,6 +45,9 @@ Each page is a self-contained static HTML (no build, no backend):
 ```
 index.html              hub page — links the three demos (no engine, instant load)
 escapement3d.html       the 3-part escapement app, 3D (static, no build step)
+3d-verify-worker.mjs    the escapement's independent 3D cross-check (Web Worker)
+sfcgal3d_32fix.wasm.js  SFCGAL 2.3.0 in wasm (CGAL Gmpq kernel), vendored — no CDN
+sfcgal3d_32fix.wasm.wasm its wasm binary (import.meta.url resolves it in the worker)
 index2d.html            the 3-part escapement, 2D engineering view
 index34.html            the 34-part full movement + live wasm take-apart
 movement_snapshot.json  assembled Ep5 state (world WKT per piece, phases baked in)
@@ -64,7 +67,7 @@ The original article had to flee SQL Server 2025 for PostGIS because SQL Server 
 
 - The balance "wheel" is drawn but its inertia is not simulated — the fork follows a prescribed 5 Hz triangle wave (a real balance's phase emerges from impulse; that's future work).
 - Wheel motion while free is constant-speed, not torque-driven.
-- 2D only, like the article's Part 1. The 3D keyless works is where PostGIS/SFCGAL would win.
+- 2D physics, like the article's Part 1 — but the escapement3d page cross-checks every tick against a real 3D SFCGAL-in-wasm volumetric test in a Web Worker (the "3D cross-check" HUD row), so the 2D reduction is continuously verified, not assumed.
 - Teeth are convex quadrilaterals, not epicycloid profiles.
 
 ## License
